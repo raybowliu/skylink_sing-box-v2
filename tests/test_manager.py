@@ -3,6 +3,7 @@ import base64
 import contextlib
 import hashlib
 import http.server
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -176,9 +177,8 @@ class ManagerTest(unittest.TestCase):
         for lang, label in [('zh_CN','节点：'),('en_US','Node: ')]:
             result=self.shell('LANGUAGE_CHOICE='+lang+'; exports')
             lines=result.stdout.splitlines()
-            for index,line in enumerate(lines):
-                if line.startswith(('vless://','hysteria2://')):
-                    self.assertEqual(lines[index-3],'-'*64)
+            for title in ['v2rayN','Clash Verge / Mihomo YAML','sing-box JSON', '小火箭 / Shadowrocket 订阅' if lang=='zh_CN' else 'Shadowrocket subscription']:
+                self.assertEqual(lines[lines.index(title)-1],'-'*64)
             self.assertEqual(sum(i.startswith(label) for i in lines),2)
             notes=(self.base/'subscription-notes.txt').read_text()
             self.assertIn('无域名模式仍使用 TLS' if lang=='zh_CN' else 'No-domain mode still uses self-signed TLS',notes)
@@ -228,6 +228,30 @@ ufw(){ printf 'Status: inactive\\n'; }
 hy2_diagnostics""")
         self.assertIn('sing-box is not active',result.stderr)
         self.assertIn('No local UDP 443 listener',result.stderr)
+
+    @unittest.skipUnless(importlib.util.find_spec('yaml'), 'PyYAML required for YAML export tests')
+    def test_client_specific_exports_match_protocols_and_secure_defaults(self):
+        import yaml
+        for mode in ['1','2','3']:
+            self.exported(mode)
+            nodes=(self.base/'nodes.txt').read_text()
+            for client in ['v2rayn','shadowrocket']:
+                self.assertEqual((self.base/(client+'-nodes.txt')).read_text(),nodes)
+                encoded=(self.base/(client+'-subscription.txt')).read_text()
+                self.assertEqual(base64.b64decode(encoded).decode(),nodes)
+            sb=json.loads((self.base/'sing-box-client.json').read_text())
+            self.assertEqual(sb['inbounds'][0]['listen'],'127.0.0.1')
+            self.assertEqual(sb['route']['final'],sb['outbounds'][0]['tag'])
+            self.assertEqual(len(sb['outbounds']),2 if mode!='3' else 3)
+            self.assertFalse(any(i.get('tls',{}).get('insecure',False) for i in sb['outbounds']))
+            clash=yaml.safe_load((self.base/'clash-verge.yaml').read_text())
+            self.assertFalse(clash['allow-lan'])
+            self.assertEqual(clash['proxy-groups'][0]['proxies'],[p['name'] for p in clash['proxies']])
+            self.assertEqual(clash['rules'],['MATCH,SKYBYTE'])
+            for proxy in clash['proxies']:self.assertFalse(proxy.get('skip-cert-verify',False))
+            if SB:subprocess.run([SB,'check','-c',str(self.base/'sing-box-client.json')],check=True)
+            if MIHOMO:subprocess.run([MIHOMO,'-t','-d',str(self.root/'mihomo-data'),'-f',str(self.base/'clash-verge.yaml')],
+                                     check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
     def test_certificate_names_and_key_matching(self):
         command = 'validate_certificate ' + ' '.join(map(shlex.quote, [str(self.cert), str(self.key)]))
@@ -330,11 +354,14 @@ printf '%s' "$SSH_PORTS"''')
 
     def test_uninstall_backs_up_and_preserves_external_certs_and_unknown_files(self):
         self.prepare_uninstall()
+        self.shell('exports')
         result=self.shell('need_root(){ :; }; systemctl(){ :; }; nft(){ return 1; }; uninstall_manager', input='yEs\n')
         self.assertIn('Uninstalled;',result.stdout)
         self.assertFalse(self.bin.exists())
         self.assertFalse((self.config/'config.json').exists())
         self.assertFalse((self.base/'state.json').exists())
+        for name in ['v2rayn-nodes.txt','shadowrocket-subscription.txt','sing-box-client.json','clash-verge.yaml']:
+            self.assertFalse((self.base/name).exists())
         self.assertFalse((self.root/'systemd'/'sing-box.service').exists())
         self.assertTrue(self.cert.exists());self.assertTrue(self.key.exists())
         self.assertTrue((self.config/'unrelated.conf').exists())
@@ -525,10 +552,10 @@ if [[ $url == *.tar.gz ]]; then cp """+shlex.quote(str(archive))+""" "$out"; els
         cfg['inbounds'][0]['listen_port'] = udp
         server_file = self.root/'server.json'
         server_file.write_text(json.dumps(cfg))
-        exported = self.exported('2')['outbounds'][0]
-        exported.update(server_port=udp)
-        client = {'inbounds':[{'type':'mixed','listen':'127.0.0.1','listen_port':mixed}],
-                  'outbounds':[exported], 'route':{'final':exported['tag']}}
+        self.exported('2')
+        client=json.loads((self.base/'sing-box-client.json').read_text())
+        client['inbounds'][0]['listen_port']=mixed
+        client['outbounds'][0]['server_port']=udp
         client_file = self.root/'client.json'
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):
@@ -576,10 +603,10 @@ if [[ $url == *.tar.gz ]]; then cp """+shlex.quote(str(archive))+""" "$out"; els
             self.assertIn('certificate',log.read())
             if MIHOMO:
                 import yaml
-                config=yaml.safe_load((self.base/'mihomo-proxies.yaml').read_text())
+                config=yaml.safe_load((self.base/'clash-verge.yaml').read_text())
                 config['proxies'][0]['port']=udp
                 proxy_port=port()
-                config.update({'mixed-port':proxy_port,'mode':'rule','rules':['MATCH,SKYBYTE-HY2'],
+                config.update({'mixed-port':proxy_port,'mode':'rule',
                                'external-controller':'','ipv6':False})
                 config_file=self.root/'mihomo.yaml'
                 config_file.write_text(yaml.safe_dump(config))

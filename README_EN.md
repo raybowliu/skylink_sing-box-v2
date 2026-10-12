@@ -58,6 +58,10 @@ Menu 5 exports:
 
 | File | Purpose |
 | --- | --- |
+| `v2rayn-nodes.txt` / `v2rayn-subscription.txt` | v2rayN URIs / local Base64 subscription; verify core support and certificate trust |
+| `shadowrocket-nodes.txt` / `shadowrocket-subscription.txt` | Shadowrocket URIs / local Base64 subscription content; no hosted URL is deployed |
+| `clash-verge.yaml` | Complete Clash Verge Rev/Mihomo local configuration, including a proxy group and routing; loopback mixed port 7890 |
+| `sing-box-client.json` | Complete sing-box client JSON, with loopback mixed port 1080 and the first node as its default route |
 | `nodes.txt` / `subscription-base64.txt` | Shadowrocket/v2rayN and other compatible clients; verify TLS trust after import |
 | `mihomo-proxies.yaml` | Mihomo/OpenClash fragment; merge both `proxies` and the self-signed `tls.custom-certifactes` trust settings (upstream spelling) |
 | `outbounds.json` | sing-box JSON fragment containing `outbounds`, to merge into a client configuration |
@@ -73,7 +77,7 @@ Exports contain credentials, remain local under `/etc/singbox-v2/` and use mode 
 
 ## Hopping, updates and restore
 
-Node information is displayed per protocol with dashed separators; subscription URI formats are preserved.
+Node information is grouped into v2rayN, Clash Verge/Mihomo YAML, sing-box JSON and Shadowrocket subscription sections with dashed separators. The terminal displays actual URI, complete YAML/JSON or Base64 content plus file paths. Import full configurations as new local client profiles; existing client configurations are not overwritten. sing-box uses the first node by default; change `route.final` to another outbound tag when needed. Use Mihomo rather than classic Clash, which does not support these protocols. URI/Base64 formats remain compatible; no hosted subscription URL is deployed.
 
 **No domain does not mean no certificate.** Default URIs retain `insecure=0`. Importing a URI does not establish self-signed certificate trust, and enabling TLS does not establish trust.
 

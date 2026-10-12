@@ -267,7 +267,11 @@ def write(name,content):
  with open(path,'wb' if isinstance(content,bytes) else 'w') as f:f.write(content)
  os.chmod(path,0o600)
  return path
-write('nodes.txt','\n'.join(links)+'\n'); write('subscription-base64.txt',base64.b64encode(('\n'.join(links)+'\n').encode()).decode()+'\n')
+node_text='\n'.join(links)+'\n'
+subscription_text=base64.b64encode(node_text.encode()).decode()+'\n'
+write('nodes.txt',node_text); write('subscription-base64.txt',subscription_text)
+write('v2rayn-nodes.txt',node_text); write('v2rayn-subscription.txt',subscription_text)
+write('shadowrocket-nodes.txt',node_text); write('shadowrocket-subscription.txt',subscription_text)
 out=[];proxy=[]
 if mode!='2':
  out.append({'type':'vless','tag':'SKYBYTE-Reality','server':ip,'server_port':vp,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
@@ -283,6 +287,10 @@ if mode!='1':
  if self_signed:mp['fingerprint']=fingerprint
  proxy.append(mp)
 write('outbounds.json',json.dumps({'outbounds':out},ensure_ascii=False,indent=2)+'\n')
+client_config={'inbounds':[{'type':'mixed','tag':'mixed-in','listen':'127.0.0.1','listen_port':1080}],
+               'outbounds':out+[{'type':'direct','tag':'direct'}], 'route':{'final':out[0]['tag']}}
+client_json=json.dumps(client_config,ensure_ascii=False,indent=2)+'\n'
+write('sing-box-client.json',client_json)
 trust_files=[]
 # Remove obsolete public trust exports, so a changed certificate cannot leave stale instructions.
 for name in ['hy2-client-ca.pem','hy2-client-ca.cer','hy2-client-ca.mobileconfig']:
@@ -323,6 +331,12 @@ def yaml_dump(v,level=0):
 yaml_config={'proxies':proxy}
 if cert_pem: yaml_config['tls']={'custom-certifactes':[cert_pem]}
 write('mihomo-proxies.yaml','# SKYBYTE: merge proxies AND tls trust settings with your Mihomo config.\n'+'\n'.join(yaml_dump(yaml_config))+'\n')
+clash_config=dict(yaml_config)
+clash_config.update({'mixed-port':7890,'allow-lan':False,'mode':'rule',
+                     'proxy-groups':[{'name':'SKYBYTE','type':'select','proxies':[p['name'] for p in proxy]}],
+                     'rules':['MATCH,SKYBYTE']})
+clash_yaml='\n'.join(yaml_dump(clash_config))+'\n'
+write('clash-verge.yaml',clash_yaml)
 notes=[]
 if mode!='1' and self_signed:
  notes += [tr('无域名模式仍使用 TLS 自签名证书；只导入链接不会自动建立信任。','No-domain mode still uses self-signed TLS; importing a URI does not establish trust.'),
@@ -338,16 +352,30 @@ if mode!='1' and self_signed:
            tr('仍失败时运行菜单 22；服务运行、证书信任与 UDP 可达需要分别检查。','If connection fails, run menu 22; service health, certificate trust and UDP reachability are separate checks.')]
 if s.get('hop'):notes.append(tr('端口跳跃需客户端支持，并放行本机和云防火墙 UDP 范围；普通 URI 不包含跳跃范围。','Hopping requires client support and local/provider UDP range rules; basic URIs do not include the range.'))
 write('subscription-notes.txt','\n'.join(notes or [tr('导入前核实客户端协议支持。','Check client protocol support before importing.')])+'\n')
-print(separator)
-print(tr('SKYBYTE 本地订阅文件：','SKYBYTE local subscription files:'))
-for name in ['nodes.txt','subscription-base64.txt','outbounds.json','mihomo-proxies.yaml','subscription-notes.txt']+trust_files:print('  '+os.path.join(base,name))
 color=sys.stdout.isatty() and not os.getenv('NO_COLOR')
-for link in links:
+def sensitive(text):print(('\033[1;31m' if color else '')+text.rstrip()+('\033[0m' if color else ''))
+def section(title,names):
  print(separator)
+ print(title)
+ for name in names:print(tr('文件：','File: ')+os.path.join(base,name))
+section('v2rayN', ['v2rayn-nodes.txt','v2rayn-subscription.txt'])
+print(tr('从剪贴板导入以下节点；HY2 自签名需要证书信任。','Import these URIs from clipboard; self-signed HY2 needs certificate trust.'))
+for link in links:
  print(tr('节点：','Node: ')+('VLESS + Reality + Vision' if link.startswith('vless:') else 'Hysteria2'))
- print(tr('节点链接（含凭据，请勿公开）：','Node link (contains credentials; do not publish):'))
- print(('\033[1;31m' if color else '')+link+('\033[0m' if color else ''))
+ sensitive(link)
+section('Clash Verge / Mihomo YAML', ['clash-verge.yaml'])
+print(tr('完整客户端配置，可作为本地配置导入；经典 Clash 不支持这些协议。','Complete local client config; classic Clash does not support these protocols.'))
+sensitive(clash_yaml)
+section('sing-box JSON', ['sing-box-client.json','outbounds.json'])
+print(tr('完整客户端配置，默认使用首个节点；outbounds.json 为合并用片段。','Complete client config using the first node by default; outbounds.json is a merge fragment.'))
+sensitive(client_json)
+section(tr('小火箭 / Shadowrocket 订阅','Shadowrocket subscription'), ['shadowrocket-nodes.txt','shadowrocket-subscription.txt'])
+print(tr('以下为本地 Base64 订阅内容；不是在线订阅 URL。单节点可从 shadowrocket-nodes.txt 复制。','Local Base64 subscription content below; this is not a hosted subscription URL. Copy individual URIs from shadowrocket-nodes.txt.'))
+sensitive(subscription_text)
 print(separator)
+print(tr('兼容导出和证书说明：','Legacy exports and certificate notes:'))
+for name in ['nodes.txt','subscription-base64.txt','mihomo-proxies.yaml','subscription-notes.txt']+trust_files:print('  '+os.path.join(base,name))
+
 for note in notes:print(('\033[1;33m' if color else '')+tr('提示：','NOTICE: ')+note+('\033[0m' if color else ''))
 if notes:print(separator)
 
@@ -648,7 +676,7 @@ subscription(){
  check_owned || return
  warn "$(L '仅生成本地订阅文件；不会开启公开的 HTTP/HTTPS 订阅服务。' 'Local subscription files only; no public HTTP/HTTPS service will be started.')"
  exports || return 1
- say '通用 URI/base64 仅适用于支持该格式和 HY2 证书验证的客户端。Mihomo YAML 为代理片段，sing-box JSON 为出站片段。' 'URIs/base64 require client support and HY2 cert trust. Mihomo YAML and sing-box JSON are fragments.'
+ say '已生成各客户端格式；请核实自签名信任。本地订阅文件不等于在线订阅网址。' 'Client formats exported; verify self-signed trust. Local subscription files are not hosted URLs.'
 }
 
 uninstall_manager(){
@@ -699,7 +727,7 @@ PY
  # Remove explicit managed files only; never recursively delete user configuration directories.
  rm -f -- "$unit" "$SYSTEMD_DIR/singbox-v2-update.service" "$SYSTEMD_DIR/singbox-v2-update.timer" "$SYSTEMD_DIR/singbox-v2-hop.service" "$BIN" "$CONF"
  while IFS= read -r file; do if [[ -n $file ]]; then rm -f -- "$file"; fi; done <<<"$managed_certs"
- for file in state.json language.conf hop.nft nodes.txt subscription-base64.txt outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
+ for file in state.json language.conf hop.nft nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
  # Remove executable copies only when they are identifiable manager scripts.
  for file in "$MANAGER_BIN" "$MANAGER_LIB"; do
   if [[ -f $file && ! -L $file ]] && grep -q '^# SKYBYTE Manager V2.1 community manager;' "$file"; then rm -f -- "$file"; fi

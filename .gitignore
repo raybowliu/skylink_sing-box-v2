@@ -11,3 +11,9 @@ subscription-notes.txt
 outbounds.json
 mihomo-proxies.yaml
 *.log
+v2rayn-nodes.txt
+v2rayn-subscription.txt
+shadowrocket-nodes.txt
+shadowrocket-subscription.txt
+sing-box-client.json
+clash-verge.yaml
