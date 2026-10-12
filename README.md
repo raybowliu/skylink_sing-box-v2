@@ -58,6 +58,10 @@ HY2 可以选择：
 
 | 文件 | 使用方式 |
 | --- | --- |
+| `v2rayn-nodes.txt` / `v2rayn-subscription.txt` | v2rayN 节点 URI / 本地 Base64 订阅，导入后核实客户端核心及证书信任 |
+| `shadowrocket-nodes.txt` / `shadowrocket-subscription.txt` | 小火箭单节点 URI / 本地 Base64 订阅内容；不自动部署在线订阅 URL |
+| `clash-verge.yaml` | Clash Verge Rev/Mihomo 完整本地配置，含代理组和路由；默认本地混合端口 7890 |
+| `sing-box-client.json` | sing-box 完整客户端 JSON，默认本地混合端口 1080，路由使用首个节点 |
 | `nodes.txt` / `subscription-base64.txt` | Shadowrocket、v2rayN 等支持相应协议的客户端；导入后核实 TLS 信任设置 |
 | `mihomo-proxies.yaml` | Mihomo/OpenClash 配置片段，合并 `proxies` 及自签名所需的 `tls.custom-certifactes`（字段拼写为上游格式） |
 | `outbounds.json` | 包含 `outbounds` 的 sing-box JSON 配置片段；合并到已有客户端配置 |
@@ -73,7 +77,7 @@ Shadowrocket/v2rayN 使用自签名证书时：通过可信 SSH/SFTP 通道取�
 
 ## 端口跳跃、更新与恢复
 
-节点信息按协议逐个显示，并用虚线隔开；订阅文件仍保留原始 URI 格式。
+节点信息按 v2rayN、Clash Verge/Mihomo YAML、sing-box JSON、小火箭订阅四块显示，并用虚线隔开。终端直接显示对应链接、完整 YAML/JSON 或 Base64 内容，并列出文件路径。客户端配置仅作为新的本地配置导入，不覆盖已有客户端配置；完整 sing-box JSON 默认使用首个节点，可修改 `route.final` 选择其他出站。经典 Clash 内核不支持这些协议，应使用 Mihomo。订阅文件仍保留原始 URI/Base64 格式，未部署在线订阅 URL。
 
 **“无域名”不等于“无证书”。** 默认链接保留 `insecure=0`；只导入链接并不能建立自签名证书信任。TLS 开启也不表示信任已建立。
 
