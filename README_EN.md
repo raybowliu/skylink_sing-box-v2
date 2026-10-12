@@ -1,4 +1,4 @@
-# sing-box V2.0 — Bilingual manager (test candidate)
+# SKYBYTE sing-box Manager V2.1 — Bilingual manager (test candidate)
 
 **Status:** The Bash syntax and basic language-switching menus have been locally tested. This has **not** passed an end-to-end live VPS deployment, protocol handshake, firewall, update or rollback test. Use a fresh test VPS with a snapshot, not a production server.
 
@@ -36,3 +36,16 @@ Review the source before executing. See the Chinese `README.md` for further warn
 Menu 1 now offers Reality only, HY2 only, or dual protocol. HY2 accepts an existing TLS cert or can create a self-signed certificate with an IP SAN. The public certificate must be transferred securely and explicitly trusted by supported clients; a HY2 URI alone does not establish trust. Menus are bold green, and confirmation accepts YES regardless of case.
 
 **This is an unverified testing build. Bash syntax validation is not equivalent to a real VPS installation, client connectivity, upgrade, or rollback test. Do not deploy to production.**
+
+## SKYBYTE V2.1 additions
+
+YouTube channel: https://www.youtube.com/@SKYBYTE9119
+
+- Menu 1/2/3: install Reality, HY2, or both. Menu 4: node info. Menu 5: local subscription exports. Bold green menu, cyan headings, bold red credential links, yellow warnings where ANSI is supported. Case-insensitive `yes` confirmation.
+- Menu 6: UFW installation/enable/disable/rule management. Verify the real SSH port and ensure out-of-band VPS console access before enabling UFW. Provider firewall is separate.
+- Menu 8: service status and start/restart/stop/boot enable/config check. An active service does not establish end-to-end client availability.
+- Menu 9: optional vnStat installation and VPS interface traffic monitoring (daily, monthly, live). **Does not count Reality and HY2 separately.**
+- Local exports in `/etc/singbox-v2/` (chmod 600): `nodes.txt`, `subscription-base64.txt`, `mihomo-proxies.yaml` (proxy fragment), `outbounds.json` (outbound fragment), `subscription-notes.txt`. Never publish credentials. This does **not** create a remote HTTPS subscription URL.
+- Self-signed HY2 requires securely distributing and trusting the certificate on each client. Replace `REPLACE_WITH_TRUSTED_CLIENT_CERT_PATH` with a real trusted client-side certificate path. Client support varies.
+
+This remains an **untested VPS candidate**: only Bash syntax and static checks were performed. Test on a disposable VPS with a snapshot and console before public release.
