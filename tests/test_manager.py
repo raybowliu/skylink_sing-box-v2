@@ -68,6 +68,7 @@ class ManagerTest(unittest.TestCase):
                          LANG_FILE=self.base / 'language.conf', LANGUAGE_CHOICE='en_US',
                          REPORT=self.base / 'reports', SYSTEMD_DIR=self.root/'systemd',
                          OS_RELEASE=self.root/'os-release', MANAGER_BIN=self.root/'manager-command',
+                         MANAGER_LIB=self.root/'manager-lib',
                          SYSCTL_FILE=self.root/'bbr.conf')
         script = 'source ' + quote(str(ROOT / 'singbox-v2.sh')) + '\n'
         script += '\n'.join(k + '=' + quote(str(v)) for k, v in variables.items()) + '\n'
@@ -313,6 +314,108 @@ printf '%s' "$SSH_PORTS"''')
             self.assertIn('SKYBYTE Manager V2.1', result.stdout)
             self.assertIn('https://www.youtube.com/@SKYBYTE9119', result.stdout)
             self.assertIn(text, result.stdout)
+
+    def prepare_uninstall(self):
+        self.configure('2')
+        self.shell('systemctl(){ :; }; setup_service')
+        (self.config/'unrelated.conf').write_text('keep user config')
+        (self.base/'unrelated.txt').write_text('keep user file')
+
+    def test_uninstall_cancellation_preserves_deployment(self):
+        self.prepare_uninstall()
+        self.shell('need_root(){ :; }; uninstall_manager', input='no\n')
+        self.assertTrue(self.bin.exists())
+        self.assertTrue((self.config/'config.json').exists())
+        self.assertEqual(list(self.backups.iterdir()),[])
+
+    def test_uninstall_backs_up_and_preserves_external_certs_and_unknown_files(self):
+        self.prepare_uninstall()
+        result=self.shell('need_root(){ :; }; systemctl(){ :; }; nft(){ return 1; }; uninstall_manager', input='yEs\n')
+        self.assertIn('Uninstalled;',result.stdout)
+        self.assertFalse(self.bin.exists())
+        self.assertFalse((self.config/'config.json').exists())
+        self.assertFalse((self.base/'state.json').exists())
+        self.assertFalse((self.root/'systemd'/'sing-box.service').exists())
+        self.assertTrue(self.cert.exists());self.assertTrue(self.key.exists())
+        self.assertTrue((self.config/'unrelated.conf').exists())
+        self.assertTrue((self.base/'unrelated.txt').exists())
+        snapshots=list(self.backups.iterdir());self.assertEqual(len(snapshots),1)
+        self.assertTrue((snapshots[0]/'sing-box.bin').exists())
+        self.assertEqual((snapshots[0]/'config'/'hy2-backup.key').read_bytes(),self.key.read_bytes())
+
+    def test_uninstall_removes_owned_auxiliary_units_and_manager_copies(self):
+        self.prepare_uninstall()
+        self.shell('need_root(){ :; }; systemctl(){ :; }; configure_auto',input='1\n')
+        (self.root/'manager-lib').write_bytes((ROOT/'singbox-v2.sh').read_bytes())
+        (self.root/'systemd'/'singbox-v2-hop.service').write_text('Description=singbox V2 HY2 IPv4 port hopping\n')
+        result=self.shell("""need_root(){ :; }
+systemctl(){ printf 'SYSTEMCTL %s\\n' "$*"; }
+nft(){ printf 'NFT %s\\n' "$*"; }
+uninstall_manager""",input='yes\n')
+        self.assertFalse((self.root/'manager-lib').exists())
+        self.assertFalse((self.root/'manager-command').exists())
+        self.assertEqual(list((self.root/'systemd').iterdir()),[])
+        self.assertIn('NFT delete table ip singbox_v2_hop',result.stdout)
+        self.assertLess(result.stdout.index('disable --now singbox-v2-update.timer'),
+                        result.stdout.index('disable --now sing-box.service'))
+
+    def test_uninstall_preserves_unowned_hop_table_and_executable(self):
+        self.prepare_uninstall()
+        (self.root/'manager-command').write_text('unrelated executable')
+        result=self.shell('need_root(){ :; }; systemctl(){ :; }; nft(){ printf UNEXPECTED_NFT; }; uninstall_manager',input='yes\n')
+        self.assertNotIn('UNEXPECTED_NFT',result.stdout)
+        self.assertEqual((self.root/'manager-command').read_text(),'unrelated executable')
+
+    def test_uninstall_refuses_symlinked_binary(self):
+        self.prepare_uninstall()
+        target=self.root/'external-binary';self.bin.rename(target);self.bin.symlink_to(target)
+        result=self.shell('need_root(){ :; }; uninstall_manager',input='yes\n',ok=False)
+        self.assertNotEqual(result.returncode,0)
+        self.assertTrue(target.exists());self.assertTrue(self.bin.is_symlink())
+
+    def test_uninstall_preserves_existing_certificates_even_with_reserved_names(self):
+        self.configure('2','2')
+        self.shell('systemctl(){ :; }; setup_service')
+        cert=self.config/'hy2-selfsigned.crt';key=self.config/'hy2-selfsigned.key'
+        cert.write_bytes(self.cert.read_bytes());key.write_bytes(self.key.read_bytes())
+        cfg=json.loads((self.config/'config.json').read_text())
+        cfg['inbounds'][0]['tls'].update(certificate_path=str(cert),key_path=str(key))
+        (self.config/'config.json').write_text(json.dumps(cfg))
+        self.shell('need_root(){ :; }; systemctl(){ :; }; uninstall_manager',input='yes\n')
+        self.assertTrue(cert.exists());self.assertTrue(key.exists())
+
+    def test_uninstall_removes_new_and_legacy_managed_selfsigned_files(self):
+        for legacy in [False,True]:
+            self.bin.write_text('#!/bin/sh\nexit 0\n');self.bin.chmod(0o700)
+            self.configure('2','1')
+            self.shell('systemctl(){ :; }; setup_service')
+            cert=self.config/'hy2-selfsigned.crt';key=self.config/'hy2-selfsigned.key'
+            cert.write_bytes(self.cert.read_bytes());key.write_bytes(self.key.read_bytes())
+            cfg=json.loads((self.config/'config.json').read_text())
+            cfg['inbounds'][0]['tls'].update(certificate_path=str(cert),key_path=str(key))
+            (self.config/'config.json').write_text(json.dumps(cfg))
+            meta=json.loads((self.base/'state.json').read_text());meta['cert_path']=str(cert)
+            if legacy:meta.pop('managed_certificates',None)
+            else:meta['managed_certificates']=[str(cert),str(key)]
+            (self.base/'state.json').write_text(json.dumps(meta))
+            self.shell('need_root(){ :; }; systemctl(){ :; }; uninstall_manager',input='yes\n')
+            self.assertFalse(cert.exists());self.assertFalse(key.exists())
+
+    def test_uninstall_refuses_modified_service(self):
+        self.prepare_uninstall()
+        (self.root/'systemd'/'sing-box.service').write_text('Description=another deployment\n')
+        result=self.shell('need_root(){ :; }; uninstall_manager',input='yes\n',ok=False)
+        self.assertNotEqual(result.returncode,0)
+        self.assertTrue(self.bin.exists())
+        self.assertTrue((self.config/'config.json').exists())
+
+    def test_uninstall_backup_failure_or_stop_failure_preserves_config(self):
+        for failure in ['backup(){ return 1; }','systemctl(){ return 1; }']:
+            self.prepare_uninstall()
+            result=self.shell('need_root(){ :; }; '+failure+'; uninstall_manager',input='yes\n',ok=False)
+            self.assertNotEqual(result.returncode,0)
+            self.assertTrue(self.bin.exists())
+            self.assertTrue((self.config/'config.json').exists())
 
     def test_installer_refuses_existing_user_config(self):
         self.configure('2')

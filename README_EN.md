@@ -37,6 +37,7 @@ The manager downloads an official stable sing-box binary and verifies its SHA-25
 | 16 / 17 / 18 | IP information / basic network diagnostics / logs |
 | 19 / 20 / 21 | Legal/privacy notice / new-server initialization / language |
 | 22 | HY2/Shadowrocket diagnostics: config, service, actual UDP port, certificate and UFW |
+| 23 | Uninstall the manager and managed sing-box after backup and confirmation |
 
 Initialization updates apt indexes, upgrades packages, installs administration tools and checks time synchronization, DNS, HTTPS, SSH and UFW. It preserves an active time-sync service and does not enable UFW, change SSH, configure BBR or reboot. Package upgrades may restart services; retain console access.
 
@@ -87,6 +88,10 @@ Updates back up first, download and check a candidate binary, then replace the b
 New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including snapshots of external TLS certificate/key files. Restore backs up the current deployment and attempts rollback on failure. It disables managed hopping and clears its state; re-enable hopping when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
 
 ## Validation
+
+Menu **23** requires case-insensitive `YES` confirmation and first backs up configuration, certificates and the binary. Backup failure cancels removal. It stops automatic updates, managed hopping and sing-box, then removes owned units, the binary, node configuration, generated certificates/exports and identifiable manager executable copies. Changed unit ownership/start paths or symlinked key files cause refusal. Successful uninstall exits the menu.
+
+Backups, external certificates, unknown user files, reports, UFW allow rules, BBR/FQ settings and system packages such as vnStat remain. It does not reset the firewall or delete unrelated nftables tables. Backups contain private keys; protect permissions and disk space. To restore after uninstall, deploy again and restore the retained backup through menu 15.
 
 ```bash
 bash -n install.sh singbox-v2.sh
