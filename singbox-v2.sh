@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# sing-box V2.0 community manager; review before running, Debian/Ubuntu only
+# SKYBYTE Manager V2.1 community manager; review before running, Debian/Ubuntu only
 set -Eeuo pipefail
 umask 077
 BASE=/etc/singbox-v2
@@ -43,9 +43,15 @@ else
 fi
 export LANGUAGE_CHOICE
 exec 9>"$LOCK"; flock -n 9 || { echo "$(L '其他管理任务正在运行' 'Another management task is already running')"; exit 1; }
-err(){ echo "错误：$*" >&2; }
+if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then
+ GREEN=$'\033[1;32m'; RED=$'\033[1;31m'; YELLOW=$'\033[1;33m'; CYAN=$'\033[1;36m'; RESET=$'\033[0m'
+else GREEN=''; RED=''; YELLOW=''; CYAN=''; RESET=''; fi
+YOUTUBE='https://www.youtube.com/@SKYBYTE9119'
+ok(){ printf '%s✔ %s%s\n' "$GREEN" "$*" "$RESET"; }
+warn(){ printf '%s⚠ %s%s\n' "$YELLOW" "$*" "$RESET"; }
+err(){ printf '%s✖ %s%s\n' "$RED" "$*" "$RESET" >&2; }
 need_root(){ [[ $EUID == 0 ]] || { err "$(L '需要 root 权限' 'Root privileges required')"; exit 1; }; }
-confirm(){ local answer; read -r -p "$1 $(L '[输入 YES 确认]' '[Type YES to confirm]'): " answer; [[ "${answer,,}" == yes ]]; }
+confirm(){ local answer; read -r -p "$1 $(L '[输入 YES 确认]' '[Type YES to confirm]'): " answer; answer="${answer//[[:space:]]/}"; [[ "${answer,,}" == yes ]]; }
 notice(){ if [[ "$LANGUAGE_CHOICE" == en_US ]]; then cat <<'EOF_EN'
 [LEGAL & PRIVACY NOTICE] Use only for lawful networking education and server administration. You must comply with applicable law and service terms. Updating software or changing firewall/network settings may interrupt service or cause data loss; make backups first. Provided as-is to the extent permitted by law. Third-party components retain their licenses.
 Installation and updates can contact sing-box.app, github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org for your public IPv4. The optional IP report queries ipinfo.io, which may retain your IP and request metadata; reports are stored locally in /etc/singbox-v2/reports and deleted after 30 days. No developer telemetry and no intentional upload of node credentials. Auto-update is opt-in. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
@@ -84,9 +90,9 @@ EOF
 # If an official package created a service, do not replace it: install requires a clean VPS.
 install(){
  need_root
- local mode cert_mode="" 
- printf '\033[1;32m%s\033[0m\n' "$(L '1 Reality 单协议 | 2 HY2 单协议 | 3 双协议 | 0 返回' '1 Reality only | 2 HY2 only | 3 Dual | 0 Back')"
- read -r -p '> ' mode || return
+ local mode="${1:-}" cert_mode="" 
+ if [[ -z "$mode" ]]; then printf '\033[1;32m%s\033[0m\n' "$(L '1 Reality 单协议 | 2 HY2 单协议 | 3 双协议 | 0 返回' '1 Reality only | 2 HY2 only | 3 Dual | 0 Back')"
+ read -r -p '> ' mode || return; fi
  [[ "$mode" == 0 ]] && return
  [[ "$mode" =~ ^[123]$ ]] || { err "Invalid selection"; return 1; }
  notice; confirm "$(L '同意声明并安装所选协议？' 'Accept notice and install selected protocol(s)?')" || return 0
@@ -155,27 +161,61 @@ PY
  if [[ $cert_mode == 1 ]]; then echo "$(L '自签名证书：' 'Self-signed certificate: ')$cert"; openssl x509 -in "$cert" -noout -fingerprint -sha256; echo "$(L '务必将证书安全导入客户端并验证，链接本身不足以建立信任。' 'Securely import and verify certificate on client; URL alone cannot establish trust.')"; fi
  echo '部署完成。按实际协议检查云防火墙。'; exports
 }
-exports(){ check_owned || return; python3 - "$META" "$BASE" <<'PY'
-import json,sys,urllib.parse,os
-s=json.load(open(sys.argv[1]));ip=s['ip'];u=s['uuid'];sid=s['sid'];pk=s['public_key'];p=s['hy2_password'];d=s['domain'];sni=s['sni'];mode=s.get('mode','3')
-v=f'vless://{u}@{ip}:443?'+urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':pk,'sid':sid,'type':'tcp'})+'#Reality'
-h=f'hysteria2://{p}@{ip}:443?'+urllib.parse.urlencode({'sni':d})+'#HY2'
-path=os.path.join(sys.argv[2],'nodes.txt')
-links=([v] if mode=='1' else [h] if mode=='2' else [v,h])
-with open(path,'w') as f:f.write('\n'.join(links)+'\n')
-os.chmod(path,0o600)
-print('节点文件：'+path+'（包含敏感登录信息）')
-print('\n'.join(links))
-if s.get('cert_mode')=='1' and mode!='1': print('WARNING: HY2 requires secure client trust of '+s['cert_path']+'; the URI alone is insufficient.')
-if s.get('hop'): print('端口跳跃：',s['hop_start'], '-',s['hop_end'],'；HY2 通用 URI 不包含跳跃设置，请使用 sing-box JSON 配置。')
-# Export outbound fragment (not a complete client configuration)
-out=[{'type':'vless','tag':'Reality','server':ip,'server_port':443,'uuid':u,'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':pk,'short_id':sid}}},{'type':'hysteria2','tag':'HY2','server':ip,'server_port':443,'password':p,'tls':{'enabled':True,'server_name':d}}]
-if mode=='1':out=out[:1]
-elif mode=='2':out=out[1:]
-if s.get('hop') and mode!='1':out[-1].update({'server_ports':[f"{s['hop_start']}:{s['hop_end']}"],'hop_interval':'30s'})
-with open(os.path.join(sys.argv[2],'outbounds.json'),'w') as f:json.dump(out,f,ensure_ascii=False,indent=2)
+exports(){
+ check_owned || return
+ python3 - "$META" "$BASE" <<'PY'
+import base64,json,os,sys,urllib.parse
+s=json.load(open(sys.argv[1]));base=sys.argv[2];ip=s['ip'];mode=s.get('mode','3');d=s.get('domain','');sni=s.get('sni','')
+v='vless://{}@{}:443?{}#SKYBYTE-Reality'.format(s['uuid'],ip,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s['public_key'],'sid':s['sid'],'type':'tcp'}))
+h='hysteria2://{}@{}:443?{}#SKYBYTE-HY2'.format(s['hy2_password'],ip,urllib.parse.urlencode({'sni':d}))
+links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
+def write(name,content):
+ path=os.path.join(base,name)
+ with open(path,'w') as f:f.write(content)
+ os.chmod(path,0o600)
+ return path
+write('nodes.txt','\n'.join(links)+'\n'); write('subscription-base64.txt',base64.b64encode(('\n'.join(links)+'\n').encode()).decode()+'\n')
+out=[];proxy=[]
+if mode!='2':
+ out.append({'type':'vless','tag':'SKYBYTE-Reality','server':ip,'server_port':443,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
+ proxy.append({'name':'SKYBYTE-Reality','type':'vless','server':ip,'port':443,'uuid':s['uuid'],'network':'tcp','tls':True,'servername':sni,'client-fingerprint':'chrome','flow':'xtls-rprx-vision','reality-opts':{'public-key':s['public_key'],'short-id':s['sid']}})
+if mode!='1':
+ tls={'enabled':True,'server_name':d}
+ if s.get('cert_mode')=='1':tls['certificate_path']='REPLACE_WITH_TRUSTED_CLIENT_CERT_PATH'
+ ho={'type':'hysteria2','tag':'SKYBYTE-HY2','server':ip,'server_port':443,'password':s['hy2_password'],'tls':tls}
+ if s.get('hop'):ho.update({'server_ports':[f"{s['hop_start']}:{s['hop_end']}"],'hop_interval':'30s'})
+ out.append(ho)
+ mp={'name':'SKYBYTE-HY2','type':'hysteria2','server':ip,'port':443,'password':s['hy2_password'],'sni':d,'skip-cert-verify':False}
+ if s.get('hop'):mp['ports']=f"{s['hop_start']}-{s['hop_end']}";mp['hop-interval']=30
+ if s.get('cert_mode')=='1':mp['ca']='REPLACE_WITH_TRUSTED_CLIENT_CERT_PATH'
+ proxy.append(mp)
+write('outbounds.json',json.dumps(out,ensure_ascii=False,indent=2)+'\n')
+def scalar(x):return json.dumps(x,ensure_ascii=False) if isinstance(x,str) else ('true' if x is True else 'false' if x is False else str(x))
+def yaml_dump(v,level=0):
+ lines=[]
+ if isinstance(v,dict):
+  for k,val in v.items():
+   key=' '*level+str(k)+':'
+   if isinstance(val,(list,dict)):lines.append(key);lines.extend(yaml_dump(val,level+2))
+   else:lines.append(key+' '+scalar(val))
+ elif isinstance(v,list):
+  for val in v:
+   if isinstance(val,(list,dict)):lines.append(' '*level+'-');lines.extend(yaml_dump(val,level+2))
+   else:lines.append(' '*level+'- '+scalar(val))
+ return lines
+write('mihomo-proxies.yaml','# SKYBYTE: proxy fragments, merge with a compatible Mihomo config.\n'+'\n'.join(yaml_dump({'proxies':proxy}))+'\n')
+notes=[]
+if mode!='1' and s.get('cert_mode')=='1':notes.append('HY2 self-signed TLS: securely transfer/trust the generated cert on client and replace REPLACE_WITH_TRUSTED_CLIENT_CERT_PATH. Do NOT disable certificate verification. Confirm each client supports custom CA.')
+if s.get('hop'):notes.append('Port hopping requires client-specific support, matching server NAT and cloud firewall; basic URI does NOT encode it.')
+write('subscription-notes.txt','\n'.join(notes or ['Check client support before importing.'])+'\n')
+print('SKYBYTE local files / 本地文件:')
+for name in ['nodes.txt','subscription-base64.txt','outbounds.json','mihomo-proxies.yaml','subscription-notes.txt']:print('  '+os.path.join(base,name))
+print('Sensitive node links / 节点链接（请勿公开）:')
+for link in links:print(('\033[1;31m'+link+'\033[0m') if sys.stdout.isatty() and not os.getenv('NO_COLOR') else link)
+for note in notes:print('WARNING:',note)
 PY
 }
+
 bbr(){ need_root; confirm "$(L '更改系统 TCP 拥塞控制为 BBR、默认队列为 FQ？' 'Change system TCP congestion control to BBR and default qdisc to FQ?')" || return; modprobe tcp_bbr 2>/dev/null || :; if ! sysctl -n net.ipv4.tcp_available_congestion_control | grep -qw bbr; then err "$(L '内核不支持 BBR' 'Kernel does not support BBR')"; return 1; fi
  printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' >/etc/sysctl.d/90-singbox-v2-bbr.conf
  sysctl -p /etc/sysctl.d/90-singbox-v2-bbr.conf; sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc; }
@@ -310,42 +350,138 @@ initialize_server(){
  echo "$(L '如内核或关键服务已升级，请在维护窗口确认后自行决定是否重启。' 'If kernel or essential services were upgraded, plan a manual reboot if necessary.')"
  echo "$(L '新服务器初始化结束。' 'Server initialization complete.')"
 }
+
+# UFW safety: never assume SSH port 22, and never bypass cloud firewall checks.
+firewall(){
+ need_root
+ echo "$(L '1 安装 UFW  2 开启  3 关闭  4 查看状态  5 放行端口  6 删除规则  0 返回' '1 Install UFW  2 Enable  3 Disable  4 Status  5 Allow port  6 Delete rule  0 Back')"
+ local choice port proto
+ read -r -p '> ' choice || return
+ case "$choice" in
+ 1) confirm "$(L '安装 UFW？' 'Install UFW?')" && apt-get update && apt-get install -y ufw ;;
+ 2)
+   require_cmd ufw || return
+   echo "$(L '当前 SSH 监听信息（必须人工核实）：' 'SSH listener information (VERIFY manually):')"
+   ss -lntp | grep -E 'sshd|ssh' || true
+   read -r -p "$(L '输入当前 SSH TCP 端口（请核实云控制台/sshd 设置）：' 'Enter verified SSH TCP port: ')" port
+   valid_port "$port" || { err 'Invalid SSH port'; return 1; }
+   warn "$(L '如果 SSH 端口判断错误，开启 UFW 可能导致远程连接断开！请保留 VPS 控制台访问。' 'Wrong SSH port may lock you out. Keep VPS console access.')"
+   echo "$(L '将放行 SSH 端口与当前部署节点的 443 端口。' 'Will allow SSH and relevant deployed 443 ports.')"
+   confirm "$(L '确认开启 UFW 防火墙？' 'Enable UFW now?')" || return
+   ufw allow "$port/tcp" || return
+   if [[ -f $META ]]; then
+    case "$(state mode)" in 1) ufw allow 443/tcp;; 2) ufw allow 443/udp;; 3) ufw allow 443/tcp; ufw allow 443/udp;; esac
+   fi
+   ufw default deny incoming; ufw default allow outgoing; ufw --force enable
+   warn "$(L '如有 HY2 跳跃或云防火墙，需另外确认规则。' 'Check HY2 hopping and provider firewall rules separately.')" ;;
+ 3) require_cmd ufw && confirm "$(L '关闭 UFW 会降低保护，确定？' 'Disable UFW and reduce protection?')" && ufw --force disable ;;
+ 4) require_cmd ufw && ufw status verbose ;;
+ 5) require_cmd ufw || return
+    read -r -p 'Port: ' port; valid_port "$port" || return 1
+    read -r -p 'Protocol (tcp/udp): ' proto; [[ $proto == tcp || $proto == udp ]] || return 1
+    confirm "Allow $port/$proto?" && ufw allow "$port/$proto" ;;
+ 6) require_cmd ufw || return; ufw status numbered
+    read -r -p 'Rule number: ' port; [[ $port =~ ^[0-9]+$ ]] || return 1
+    confirm "$(L '删除指定规则？确认不会影响 SSH！' 'Delete rule? Ensure SSH stays reachable!')" && ufw --force delete "$port" ;;
+ 0) return;; *) err 'Invalid choice';;
+ esac
+}
+service_manager(){
+ echo "$(L '1 状态  2 启动  3 重启  4 停止  5 开机自启  6 配置检查  0 返回' '1 Status  2 Start  3 Restart  4 Stop  5 Enable at boot  6 Config check  0 Back')"
+ local x; read -r -p '> ' x || return
+ case "$x" in
+ 1) status;; 2) check_owned && confirm 'Start sing-box?' && systemctl start sing-box;;
+ 3) check_owned && confirm 'Restart sing-box?' && "$BIN" check -c "$CONF" && systemctl restart sing-box;;
+ 4) check_owned && warn 'All nodes will disconnect' && confirm 'Stop sing-box?' && systemctl stop sing-box;;
+ 5) check_owned && confirm 'Enable sing-box at boot?' && systemctl enable sing-box;;
+ 6) check_owned && "$BIN" check -c "$CONF";; 0) return;; *) err 'Invalid choice';; esac
+}
+traffic(){
+ echo "$(L 'vnStat 统计 VPS 网卡流量，不能区分 Reality/HY2；历史数据从安装后开始。' 'vnStat tracks VPS interface traffic, NOT Reality/HY2 separately. History starts when installed.')"
+ echo "$(L '1 安装 vnStat  2 今日  3 本月  4 实时网速  5 历史汇总  0 返回' '1 Install vnStat  2 Today  3 Monthly  4 Live  5 History  0 Back')"
+ local x; read -r -p '> ' x || return
+ case "$x" in
+ 1) confirm 'Install vnStat?' && apt-get update && apt-get install -y vnstat && systemctl enable --now vnstat;;
+ 2) require_cmd vnstat && vnstat -d;; 3) require_cmd vnstat && vnstat -m;;
+ 4) require_cmd vnstat && vnstat -l;; 5) require_cmd vnstat && vnstat;; 0) return;; *) err 'Invalid choice';; esac
+}
+subscription(){
+ check_owned || return
+ warn "$(L '仅生成本地订阅文件；不会开启公开的 HTTP/HTTPS 订阅服务。' 'Local subscription files only; no public HTTP/HTTPS service will be started.')"
+ exports
+ echo "$(L '通用 URI/base64 仅适用于支持该格式和 HY2 证书验证的客户端。Mihomo YAML 为代理片段，sing-box JSON 为出站片段。' 'URIs/base64 require client support and HY2 cert trust. Mihomo YAML and sing-box JSON are fragments.')"
+}
+
 main(){ need_root; require_cmd flock
  while :; do
- if [[ "$LANGUAGE_CHOICE" == en_US ]]; then
- printf '\033[1;32m'; cat <<'MENU_EN'
-================ sing-box V2.0 ================
- 1 Install Reality / HY2 / Dual  2 View/export nodes
- 3 Service & firewall     4 Enable BBR + FQ
- 5 HY2 port hopping       6 Check/update sing-box
- 7 Weekly auto-update     8 Backup config
- 9 Restore config        10 IP information
-11 Network checks        12 Recent logs
-13 Legal/privacy notice  14 Initialize server
-15 Change language
- 0 Exit
-================================================
-MENU_EN
- else
- printf '\033[1;32m'; cat <<'MENU_ZH'
-================ sing-box V2.0 ================
- 1 安装 Reality / HY2 / 双协议       2 查看/导出节点
- 3 服务/防火墙状态  4 开启 BBR + FQ
- 5 HY2 端口跳跃     6 手动检查更新
- 7 每周自动更新     8 备份配置
- 9 恢复配置        10 IP 信息检测
-11 基础网络检测    12 查看最近日志
-13 法律隐私声明    14 新服务器初始化
-15 切换语言
- 0 退出
-================================================
-MENU_ZH
- fi
- printf '\033[0m'
- read -r -p "$(L '选择：' 'Choose: ')" x
- case "$x" in
- 14) initialize_server;; 15) select_language;;
- 1) require_cmd python3 && require_cmd ss && install;; 2) require_cmd python3 && exports;; 3) require_cmd ss && status;; 4) bbr;; 5) hop;; 6) update;; 7) configure_auto;; 8) backup;; 9) restore;; 10) ipcheck;; 11) netcheck;; 12) journalctl -u sing-box -n 80 --no-pager;; 13) notice;; 0) exit 0;; *) echo "$(L '无效选项' 'Invalid option')";; esac
+  printf '%s' "$CYAN"
+  printf '\n==============================================\n'
+  printf '               SKYBYTE V2.1\n'
+  printf '        sing-box · Reality · HY2\n'
+  printf '==============================================%s\n' "$RESET"
+  printf '%s' "$GREEN"
+  if [[ $LANGUAGE_CHOICE == en_US ]]; then
+   cat <<'MENU'
+ 1. sing-box (Reality Vision)
+ 2. Hysteria 2
+ 3. sing-box + Hysteria 2 Dual
+ 4. View node information
+ 5. Local subscription exports
+ 6. UFW firewall management
+ 7. Firewall status
+ 8. Service & node status / controls
+ 9. VPS traffic (vnStat)
+10. Enable BBR + FQ
+11. HY2 port hopping
+12. Check/update sing-box
+13. Weekly auto-update
+14. Backup configuration
+15. Restore configuration
+16. IP information check
+17. Network diagnostics
+18. Recent logs
+19. Legal and privacy notice
+20. Initialize new server
+21. Change language
+ 0. Exit
+MENU
+  else
+   cat <<'MENU'
+ 1. sing-box（Reality Vision）
+ 2. Hysteria 2
+ 3. sing-box + Hysteria 2 双协议
+ 4. 查看节点信息
+ 5. 本地订阅节点管理
+ 6. UFW 防火墙管理
+ 7. 查看防火墙状态
+ 8. 节点运行状态与控制
+ 9. VPS 流量统计（vnStat）
+10. 开启 BBR + FQ
+11. HY2 端口跳跃
+12. 手动检查更新
+13. 每周自动更新
+14. 备份配置
+15. 恢复配置
+16. IP 信息检测
+17. 网络诊断
+18. 查看最近日志
+19. 法律隐私声明
+20. 新服务器初始化
+21. 切换语言
+ 0. 退出
+MENU
+  fi
+  printf '%s' "$RESET"
+  printf '%sYouTube: %s%s\n' "$CYAN" "$YOUTUBE" "$RESET"
+  read -r -p "$(L '请选择：' 'Select: ')" x || exit 0
+  case "$x" in
+   1|2|3) require_cmd python3 && require_cmd ss && install "$x";;
+   4) exports;; 5) subscription;; 6) firewall;; 7) command -v ufw >/dev/null && ufw status verbose || warn 'UFW not installed';;
+   8) service_manager;; 9) traffic;; 10) bbr;; 11) hop;; 12) update;; 13) configure_auto;;
+   14) backup;; 15) restore;; 16) ipcheck;; 17) netcheck;; 18) journalctl -u sing-box -n 80 --no-pager;;
+   19) notice;; 20) initialize_server;; 21) select_language;; 0) exit 0;; *) err "$(L '无效选项' 'Invalid choice')";;
+  esac
  done
 }
+
 case "${1:-}" in --auto-update) need_root; update_auto;; --notice) notice;; *) main;; esac
