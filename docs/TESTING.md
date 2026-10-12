@@ -40,7 +40,7 @@ The regression suite invokes actual Bash functions with isolated filesystem path
 - Real sing-box client → HY2 server → local HTTP forwarding; removing certificate trust fails.
 - Real Mihomo YAML validation and Mihomo client → sing-box HY2 server → local HTTP forwarding.
 
-Local development result: 41 tests passed, including real HY2 forwarding with both clients and rejection without certificate trust; `bash -n`, ShellCheck and `git diff --check` passed.
+Local development result: 43 tests passed, including real HY2 forwarding with both clients and rejection without certificate trust; `bash -n`, ShellCheck and `git diff --check` passed.
 
 Local development validation: macOS arm64, Bash 3.2, ShellCheck 0.11.0, OpenSSL 3.6.2, sing-box 1.14.3, Mihomo 1.19.32. CI pins the same protocol engine releases on Ubuntu 24.04 / Debian 12 with the distributions' Bash/OpenSSL/ShellCheck.
 
@@ -73,3 +73,7 @@ Menu 23 requires confirmation and a successful backup before removing owned serv
 ## Client-specific exports
 
 Terminal sections show v2rayN URIs, full Clash Verge/Mihomo YAML, full sing-box client JSON and Shadowrocket local Base64 subscriptions, each separated with dashed lines. Legacy exports remain. New exports are private files, carry only installed protocols, retain verified TLS trust and are removed during managed uninstall. YAML/JSON are checked by actual Mihomo/sing-box binaries for all three protocol combinations. Real HY2 forwarding tests now load the complete generated client configurations, rather than constructing their own client routing. No Shadowrocket/v2rayN GUI compatibility claim is made.
+
+## Custom names and output colors
+
+Installation and menu 24 accept a persisted node-name prefix, defaulting to SKYBYTE on Enter. Protocol suffixes keep names unique. Tests cover Chinese/spaces/URI punctuation, all exported names and routing references, unchanged server config, reset to default, length/control-character rejection and real engine config validation. Node metadata and instructions use yellow ANSI styles while credential/config content stays red; NO_COLOR/non-terminal output remains plain.

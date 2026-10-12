@@ -253,6 +253,37 @@ hy2_diagnostics""")
             if MIHOMO:subprocess.run([MIHOMO,'-t','-d',str(self.root/'mihomo-data'),'-f',str(self.base/'clash-verge.yaml')],
                                      check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
 
+    def test_custom_node_names_propagate_to_all_formats(self):
+        import urllib.parse,yaml
+        self.configure('3')
+        before=(self.config/'config.json').read_bytes()
+        name='HK 测试 #1 & /'
+        self.shell('rename_node',input=name+'\n')
+        self.assertEqual((self.config/'config.json').read_bytes(),before)
+        meta=json.loads((self.base/'state.json').read_text())
+        self.assertEqual(meta['node_name'],name)
+        expected=[name+'-Reality',name+'-HY2']
+        uris=(self.base/'nodes.txt').read_text().splitlines()
+        self.assertEqual([urllib.parse.unquote(urllib.parse.urlsplit(u).fragment) for u in uris],expected)
+        sb=json.loads((self.base/'sing-box-client.json').read_text())
+        self.assertEqual([i['tag'] for i in sb['outbounds'][:-1]],expected)
+        self.assertEqual(sb['route']['final'],expected[0])
+        clash=yaml.safe_load((self.base/'clash-verge.yaml').read_text())
+        self.assertEqual([p['name'] for p in clash['proxies']],expected)
+        self.assertEqual(clash['proxy-groups'][0]['proxies'],expected)
+        for client in ['v2rayn','shadowrocket']:
+            self.assertEqual(base64.b64decode((self.base/(client+'-subscription.txt')).read_text()).decode(),(self.base/'nodes.txt').read_text())
+        if SB:subprocess.run([SB,'check','-c',str(self.base/'sing-box-client.json')],check=True)
+        if MIHOMO:subprocess.run([MIHOMO,'-t','-d',str(self.root/'mihomo-data'),'-f',str(self.base/'clash-verge.yaml')],check=True,stdout=subprocess.DEVNULL)
+        self.shell('rename_node',input='\n')
+        self.assertIn('#SKYBYTE-Reality',(self.base/'nodes.txt').read_text())
+
+    def test_node_name_input_defaults_and_rejects_control_characters(self):
+        self.assertEqual(self.shell('choose_node_name',input='\n').stdout.strip(),'SKYBYTE')
+        self.assertEqual(self.shell('choose_node_name',input='香港节点\n').stdout.strip(),'香港节点')
+        for name in ['x'*65,'bad\x1bname','bad\tname']:
+            self.assertNotEqual(self.shell('choose_node_name',input=name+'\n',ok=False).returncode,0)
+
     def test_certificate_names_and_key_matching(self):
         command = 'validate_certificate ' + ' '.join(map(shlex.quote, [str(self.cert), str(self.key)]))
         self.shell(command + ' 127.0.0.1')

@@ -38,6 +38,7 @@ The manager downloads an official stable sing-box binary and verifies its SHA-25
 | 19 / 20 / 21 | Legal/privacy notice / new-server initialization / language |
 | 22 | HY2/Shadowrocket diagnostics: config, service, actual UDP port, certificate and UFW |
 | 23 | Uninstall the manager and managed sing-box after backup and confirmation |
+| 24 | Customize node names and regenerate client exports |
 
 Initialization updates apt indexes, upgrades packages, installs administration tools and checks time synchronization, DNS, HTTPS, SSH and UFW. It preserves an active time-sync service and does not enable UFW, change SSH, configure BBR or reboot. Package upgrades may restart services; retain console access.
 
@@ -46,6 +47,8 @@ Before enabling UFW, the manager detects SSH ports from sshd listeners, `sshd -T
 vnStat reports **total VPS interface traffic**, never separate Reality/HY2 traffic. History starts when vnStat begins collecting data.
 
 ## HY2 and verified TLS
+
+Installation accepts a node name prefix; press Enter for `SKYBYTE`. Existing deployments can use menu **24**. Exports append `-Reality` or `-HY2` to avoid duplicate protocol names. Names support up to 64 characters, including Chinese, spaces and ordinary symbols; URI fragments are percent-encoded. All client formats use the same names. Renaming preserves server configuration, UUIDs and passwords and does not restart the service. Node names, client headings, file paths and instructions use bold yellow on color terminals; links and configuration contents remain red.
 
 Choose either:
 

@@ -149,15 +149,41 @@ WantedBy=multi-user.target
 EOF
  systemctl daemon-reload; }
 # Installation requires a clean deployment; configuration generation is separately testable.
+choose_node_name(){
+ local value
+ read -r -p "$(L '节点名称前缀 [SKYBYTE]（回车默认）：' 'Node name prefix [SKYBYTE] (Enter for default): ')" value || return 1
+ python3 - "$value" <<'PY'
+import sys,unicodedata
+name=sys.argv[1].strip() or 'SKYBYTE'
+if len(name)>64 or any(unicodedata.category(c).startswith('C') for c in name):
+ print('节点名称最多 64 个字符且不能包含控制字符 / Maximum 64 characters; no control characters',file=sys.stderr)
+ sys.exit(1)
+print(name)
+PY
+}
+rename_node(){
+ check_owned || return 1
+ local name
+ name=$(choose_node_name) || { err "$(L '节点名称无效' 'Invalid node name')"; return 1; }
+ python3 - "$META" "$name" <<'PY'
+import json,sys,os,tempfile
+p,name=sys.argv[1:];state=json.load(open(p));state['node_name']=name
+with tempfile.NamedTemporaryFile(mode='w',dir=os.path.dirname(p),delete=False) as f:
+ json.dump(state,f,ensure_ascii=False,indent=2);temp=f.name
+os.chmod(temp,0o600);os.replace(temp,p)
+PY
+ exports
+}
 write_config(){
  python3 - "$@" <<'PY'
 import json,sys
-conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:]
+conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
+node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
 d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
 elif mode=='2': d['inbounds']=d['inbounds'][1:]
 with open(conf,'w') as f:json.dump(d,f,indent=2)
-with open(meta,'w') as f:json.dump({'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'managed_certificates':[cert,key] if cert_mode=='1' else [],'ip':ip,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
+with open(meta,'w') as f:json.dump({'node_name':node_name,'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'managed_certificates':[cert,key] if cert_mode=='1' else [],'ip':ip,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
 PY
 }
 install_protocol(){
@@ -177,7 +203,8 @@ install_protocol(){
  require_cmd ss || { apt-get update && apt-get install -y iproute2 || return 1; }
  if [[ $mode != 2 ]] && ss -H -ltn '( sport = :443 )' | grep -q .; then err "$(L 'TCP 443 已被占用' 'TCP 443 is occupied')"; return 1; fi
  if [[ $mode != 1 ]] && ss -H -lun '( sport = :443 )' | grep -q .; then err "$(L 'UDP 443 已被占用' 'UDP 443 is occupied')"; return 1; fi
- local domain="" cert="" key="" sni=""
+ local domain="" cert="" key="" sni="" node_name
+ node_name=$(choose_node_name) || { err "$(L '节点名称无效' 'Invalid node name')"; return 1; }
  if [[ $mode != 1 ]]; then
   say 'HY2证书: 1 无域名(自动自签名)  2 已有证书' 'HY2 certificate: 1 No domain (self-signed)  2 Existing certificate'
   read -r -p '> ' cert_mode
@@ -221,7 +248,7 @@ PY
   chmod 600 "$key"; chmod 644 "$cert"
  fi
  if [[ $mode != 1 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
- write_config "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode"
+ write_config "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode" "$node_name"
  chmod 600 "$CONF" "$META"
  "$BIN" check -c "$CONF" || { err "$(L '配置检查失败' 'Configuration check failed')"; return 1; }
  # Binary installation does not create a package unit; create our managed service.
@@ -240,6 +267,8 @@ s=json.load(open(sys.argv[1]));base=sys.argv[2];ip=s['ip']
 en=sys.argv[4]=='en_US'
 def tr(zh,english): return english if en else zh
 separator='-'*64
+node_name=s.get('node_name') or 'SKYBYTE'
+reality_name=node_name+'-Reality'; hy2_name=node_name+'-HY2'
 config=json.load(open(sys.argv[3])); inbound={i['type']:i for i in config['inbounds'] if i['type'] in ('vless','hysteria2')}
 if not inbound: raise ValueError('No supported installed protocols')
 mode='3' if len(inbound)==2 else '1' if 'vless' in inbound else '2'
@@ -259,8 +288,8 @@ if mode!='1' and self_signed:
  import hashlib,ssl
  cert_pem=open(s['cert_path']).read()
  fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
-v='vless://{}@{}:{}?{}#SKYBYTE-Reality'.format(s.get('uuid',''),ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}))
-h='hysteria2://{}@{}:{}?{}#SKYBYTE-HY2'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))))
+v='vless://{}@{}:{}?{}#{}'.format(s.get('uuid',''),ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}),urllib.parse.quote(reality_name,safe=''))
+h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))),urllib.parse.quote(hy2_name,safe=''))
 links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
 def write(name,content):
  path=os.path.join(base,name)
@@ -274,15 +303,15 @@ write('v2rayn-nodes.txt',node_text); write('v2rayn-subscription.txt',subscriptio
 write('shadowrocket-nodes.txt',node_text); write('shadowrocket-subscription.txt',subscription_text)
 out=[];proxy=[]
 if mode!='2':
- out.append({'type':'vless','tag':'SKYBYTE-Reality','server':ip,'server_port':vp,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
- proxy.append({'name':'SKYBYTE-Reality','type':'vless','server':ip,'port':vp,'uuid':s['uuid'],'network':'tcp','tls':True,'servername':sni,'client-fingerprint':'chrome','flow':'xtls-rprx-vision','reality-opts':{'public-key':s['public_key'],'short-id':s['sid']}})
+ out.append({'type':'vless','tag':reality_name,'server':ip,'server_port':vp,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
+ proxy.append({'name':reality_name,'type':'vless','server':ip,'port':vp,'uuid':s['uuid'],'network':'tcp','tls':True,'servername':sni,'client-fingerprint':'chrome','flow':'xtls-rprx-vision','reality-opts':{'public-key':s['public_key'],'short-id':s['sid']}})
 if mode!='1':
  tls={'enabled':True,'server_name':d}
  if self_signed:tls['certificate']=cert_pem.splitlines()
- ho={'type':'hysteria2','tag':'SKYBYTE-HY2','server':ip,'server_port':hp,'password':s['hy2_password'],'tls':tls}
+ ho={'type':'hysteria2','tag':hy2_name,'server':ip,'server_port':hp,'password':s['hy2_password'],'tls':tls}
  if s.get('hop'):ho.update({'server_ports':[f"{s['hop_start']}:{s['hop_end']}"],'hop_interval':'30s'})
  out.append(ho)
- mp={'name':'SKYBYTE-HY2','type':'hysteria2','server':ip,'port':hp,'password':s['hy2_password'],'sni':d,'skip-cert-verify':False}
+ mp={'name':hy2_name,'type':'hysteria2','server':ip,'port':hp,'password':s['hy2_password'],'sni':d,'skip-cert-verify':False}
  if s.get('hop'):mp['ports']=f"{s['hop_start']}-{s['hop_end']}";mp['hop-interval']=30
  if self_signed:mp['fingerprint']=fingerprint
  proxy.append(mp)
@@ -353,28 +382,30 @@ if mode!='1' and self_signed:
 if s.get('hop'):notes.append(tr('端口跳跃需客户端支持，并放行本机和云防火墙 UDP 范围；普通 URI 不包含跳跃范围。','Hopping requires client support and local/provider UDP range rules; basic URIs do not include the range.'))
 write('subscription-notes.txt','\n'.join(notes or [tr('导入前核实客户端协议支持。','Check client protocol support before importing.')])+'\n')
 color=sys.stdout.isatty() and not os.getenv('NO_COLOR')
+def info(text):print(('\033[1;33m' if color else '')+text+('\033[0m' if color else ''))
 def sensitive(text):print(('\033[1;31m' if color else '')+text.rstrip()+('\033[0m' if color else ''))
 def section(title,names):
  print(separator)
- print(title)
- for name in names:print(tr('文件：','File: ')+os.path.join(base,name))
+ info(title)
+ for name in names:info(tr('文件：','File: ')+os.path.join(base,name))
 section('v2rayN', ['v2rayn-nodes.txt','v2rayn-subscription.txt'])
-print(tr('从剪贴板导入以下节点；HY2 自签名需要证书信任。','Import these URIs from clipboard; self-signed HY2 needs certificate trust.'))
+info(tr('从剪贴板导入以下节点；HY2 自签名需要证书信任。','Import these URIs from clipboard; self-signed HY2 needs certificate trust.'))
 for link in links:
- print(tr('节点：','Node: ')+('VLESS + Reality + Vision' if link.startswith('vless:') else 'Hysteria2'))
+ info(tr('节点：','Node: ')+('VLESS + Reality + Vision' if link.startswith('vless:') else 'Hysteria2'))
+ info(tr('节点名称：','Node name: ')+(reality_name if link.startswith('vless:') else hy2_name))
  sensitive(link)
 section('Clash Verge / Mihomo YAML', ['clash-verge.yaml'])
-print(tr('完整客户端配置，可作为本地配置导入；经典 Clash 不支持这些协议。','Complete local client config; classic Clash does not support these protocols.'))
+info(tr('完整客户端配置，可作为本地配置导入；经典 Clash 不支持这些协议。','Complete local client config; classic Clash does not support these protocols.'))
 sensitive(clash_yaml)
 section('sing-box JSON', ['sing-box-client.json','outbounds.json'])
-print(tr('完整客户端配置，默认使用首个节点；outbounds.json 为合并用片段。','Complete client config using the first node by default; outbounds.json is a merge fragment.'))
+info(tr('完整客户端配置，默认使用首个节点；outbounds.json 为合并用片段。','Complete client config using the first node by default; outbounds.json is a merge fragment.'))
 sensitive(client_json)
 section(tr('小火箭 / Shadowrocket 订阅','Shadowrocket subscription'), ['shadowrocket-nodes.txt','shadowrocket-subscription.txt'])
-print(tr('以下为本地 Base64 订阅内容；不是在线订阅 URL。单节点可从 shadowrocket-nodes.txt 复制。','Local Base64 subscription content below; this is not a hosted subscription URL. Copy individual URIs from shadowrocket-nodes.txt.'))
+info(tr('以下为本地 Base64 订阅内容；不是在线订阅 URL。单节点可从 shadowrocket-nodes.txt 复制。','Local Base64 subscription content below; this is not a hosted subscription URL. Copy individual URIs from shadowrocket-nodes.txt.'))
 sensitive(subscription_text)
 print(separator)
-print(tr('兼容导出和证书说明：','Legacy exports and certificate notes:'))
-for name in ['nodes.txt','subscription-base64.txt','mihomo-proxies.yaml','subscription-notes.txt']+trust_files:print('  '+os.path.join(base,name))
+info(tr('兼容导出和证书说明：','Legacy exports and certificate notes:'))
+for name in ['nodes.txt','subscription-base64.txt','mihomo-proxies.yaml','subscription-notes.txt']+trust_files:info('  '+os.path.join(base,name))
 
 for note in notes:print(('\033[1;33m' if color else '')+tr('提示：','NOTICE: ')+note+('\033[0m' if color else ''))
 if notes:print(separator)
@@ -780,6 +811,7 @@ LOGO
 21. Change language
 22. HY2 / Shadowrocket connection checks
 23. Uninstall SKYBYTE Manager / sing-box
+24. Customize node names
  0. Exit
 MENU
   else
@@ -807,6 +839,7 @@ MENU
 21. 切换语言
 22. HY2 / 小火箭连接诊断
 23. 卸载 SKYBYTE Manager / sing-box
+24. 自定义节点名称
  0. 退出
 MENU
   fi
@@ -823,7 +856,7 @@ MENU
    4) exports;; 5) subscription;; 6) firewall;; 7) firewall_audit;;
    8) service_manager;; 9) traffic;; 10) bbr;; 11) hop;; 12) update;; 13) configure_auto;;
    14) backup;; 15) restore;; 16) ipcheck;; 17) netcheck;; 18) journalctl -u sing-box -n 80 --no-pager;;
-   19) notice;; 20) initialize_server;; 21) select_language;; 22) hy2_diagnostics;; 23) uninstall_manager;; 0) exit 0;; *) err "$(L '无效选项' 'Invalid choice')";;
+   19) notice;; 20) initialize_server;; 21) select_language;; 22) hy2_diagnostics;; 23) uninstall_manager;; 24) rename_node;; 0) exit 0;; *) err "$(L '无效选项' 'Invalid choice')";;
   esac
   )
   action_status=$?
