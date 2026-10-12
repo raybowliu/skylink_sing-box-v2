@@ -1,10 +1,10 @@
-# sing-box V2.0 双协议管理器（测试候选版）
+# SKYBYTE sing-box Manager V2.1（测试候选版）
 
 **状态：本地 Bash 语法通过；尚未在真实 Debian/Ubuntu VPS 上做端到端安装、节点连通性、升级回滚测试。请先在全新、可快照恢复的测试 VPS 使用，不建议直接部署生产节点。**
 
 ## 环境与启动
 
-支持 Ubuntu/Debian、root、systemd、x86_64/arm64（取决于官方发行包）。准备一个指向服务器公网 IP 的域名和该域名的**可信 TLS 证书与私钥 PEM 文件**，用于 HY2；Reality 无须自有域名。云防火墙需放行 TCP 443、UDP 443，开启跳跃时还需相应 UDP 范围。先确认 SSH 端口开放。
+支持 Ubuntu/Debian、root、systemd、x86_64/arm64（取决于官方发行包）。HY2 支持自动生成自签名 TLS 证书（不需要域名），也支持导入已有证书。自签名模式需要在每个客户端安全地导入并信任证书；不应关闭证书校验。Reality 无须自有域名。云防火墙需放行 TCP 443、UDP 443，开启跳跃时还需相应 UDP 范围。先确认 SSH 端口开放。
 
 上传 `singbox-v2.sh` 到 VPS：
 
@@ -15,9 +15,9 @@ sudo bash ./singbox-v2.sh
 
 **注意**：本工具拒绝覆盖现存 `/etc/sing-box/config.json`、由本工具生成的状态或正在占用的 443 端口。第一次安装需阅读法律与隐私声明并输入 YES。官方 sing-box 安装器会安装程序/软件包并创建 service；本工具为全新安装覆盖创建一个明确调用 `/usr/local/bin/sing-box` 的服务单元，原有安装绝不要尝试。
 
-## 新增：新服务器初始化（菜单 14）
+## 新服务器初始化（菜单 20）
 
-首次登录全新 Ubuntu/Debian VPS 后运行脚本，选择 **14 新服务器初始化**。明确输入 `YES` 后，使用 apt 更新软件索引、升级已安装软件并安装常见诊断工具（包括 curl、openssl、ca-certificates、ufw、chrony、iproute2、dnsutils、mtr、jq、git、python3、util-linux、nftables 等）；检查时间同步、GitHub DNS/HTTPS、SSH 监听和 UFW 状态。**不自动启用防火墙、不改 SSH 端口、不设置 BBR、不执行 reboot。** 但系统升级本身可能升级 SSH、内核等服务，请预先做 VPS 快照、保持服务商控制台可用。时间同步尽可能沿用现有服务，避免强制切换。若检查失败，报告错误而不强行修改 DNS。该功能可重复运行，但每次都需手动确认。
+首次登录全新 Ubuntu/Debian VPS 后运行脚本，选择 **20 新服务器初始化**。明确输入 `YES` 后，使用 apt 更新软件索引、升级已安装软件并安装常见诊断工具（包括 curl、openssl、ca-certificates、ufw、chrony、iproute2、dnsutils、mtr、jq、git、python3、util-linux、nftables 等）；检查时间同步、GitHub DNS/HTTPS、SSH 监听和 UFW 状态。**不自动启用防火墙、不改 SSH 端口、不设置 BBR、不执行 reboot。** 但系统升级本身可能升级 SSH、内核等服务，请预先做 VPS 快照、保持服务商控制台可用。时间同步尽可能沿用现有服务，避免强制切换。若检查失败，报告错误而不强行修改 DNS。该功能可重复运行，但每次都需手动确认。
 
 ## 功能范围
 
@@ -60,3 +60,18 @@ sudo bash ./singbox-v2.sh
 菜单 1 支持 1 Reality 单协议、2 HY2 单协议、3 双协议。HY2 可以选择自动生成自签名 IP 证书或输入已有证书。自签名证书必须安全地传到客户端并配置证书信任，直接复制 HY2 URI 不保证正常连接；不得默认关闭证书验证。菜单绿色加粗，确认 YES 不区分大小写。
 
 **重要：此版本只完成 Bash 静态语法检查，尚未在真实 Ubuntu/Debian VPS 上完成部署、客户端验证、自动更新及回滚测试。请勿直接在生产 VPS 使用。**
+
+## SKYBYTE V2.1 新增
+
+官方教程频道：https://www.youtube.com/@SKYBYTE9119
+
+- 菜单 1/2/3：Reality、HY2 或双协议安装；4：节点信息；5：本地订阅导出。主菜单绿色加粗、标题青色加粗、节点链接红色加粗、警告黄色加粗（终端支持颜色时）。确认操作中 `yes`、`YES`、`Yes` 等均可。
+- 菜单 6：UFW 安装、开启、关闭、查看、放行/删除规则。开启前必须核对 SSH 端口；本功能无法保证识别所有 SSH 配置或云服务商防火墙，不保证避免断连。
+- 菜单 8：服务状态、启动、重启、停止、开机自启与配置检查。服务运行不代表客户端端到端可用。
+- 菜单 9：安装/查看 vnStat VPS 网卡流量（今日、月度、实时）。**不能统计 Reality/HY2 各自流量，也不能恢复安装前流量**。
+- 菜单 5 导出位于 `/etc/singbox-v2/`，权限 600：`nodes.txt`、`subscription-base64.txt`、`mihomo-proxies.yaml`（代理片段，需并入现有配置）、`outbounds.json`（sing-box 出站片段）、`subscription-notes.txt`。节点文件包含凭据，绝不上传公共仓库。**没有自动部署在线 HTTPS 订阅网址。**
+- HY2 自签名时，导出配置中 `REPLACE_WITH_TRUSTED_CLIENT_CERT_PATH` 必须替换成客户端上的受信任证书路径；不同客户端的自签名验证支持不同，导出并不保证直接导入成功。HY2 端口跳跃也取决于客户端支持。
+
+### 发布与测试说明
+
+本版本仅做 Bash 语法检查以及静态检查，没有在真实 VPS 上验证三种部署、证书信任、nftables 跳跃、升级回滚或客户端订阅导入。应先在有快照/控制台的测试 VPS 验证。
