@@ -81,3 +81,15 @@ Installation and menu 2 → 3 accept a persisted node-name prefix, defaulting to
 ## Argo and grouped menus
 
 58 tests cover both tunnel modes, token-file privacy, registration/address lifecycle, removal/backup/restore, ownership guards, download verification, unchanged credentials and bilingual grouped dispatch. Actual sing-box and Mihomo clients passed local verified TLS/WebSocket forwarding. A separate live Quick Tunnel check with cloudflared 2026.10.0 passed HTTPS/WebSocket forwarding. The local resolver returned NXDOMAIN for the new hostname; public DNS supplied the address while original SNI/Host and TLS verification were retained. Named account routes were not live-tested. Systemd mutations are mocked; VPS startup and graphical client imports remain deployment checks.
+
+## Shadowrocket terminal QR codes
+
+60 local tests passed. New tests verify that each exact exported Shadowrocket URI is fed to qrencode through stdin, separated and named in the terminal, with no credentials in encoder arguments; encoder failure is propagated and the bilingual submenu dispatches the new action. The QR renderer is mocked in these regression tests; physical phone scanning has not been tested. bash -n, ShellCheck and git diff --check passed.
+
+## Shadowrocket native VLESS links
+
+62 tests passed locally. Dedicated native exports preserve standard exports; roundtrip checks cover Base64 authority, Unicode/punctuation names, Vision, Reality public key/short ID/fingerprint, WS host/path and enabled certificate verification. QR input tests now use native files. Schema follows the Xboard Shadowrocket exporter linked in both READMEs; actual Shadowrocket GUI import/scanning still needs user verification.
+
+## Startup summary
+
+64 tests passed locally. The bilingual green startup summary reads local OS/kernel/architecture/virtualization/interface addresses and checks real service state, with fallbacks for missing probes. Tests cover translated output, running/inactive/uninstalled distinctions and lack of startup network requests. New changes are consolidated into PR #7.

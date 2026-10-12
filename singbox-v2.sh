@@ -3,6 +3,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
+MANAGER_VERSION=2.1.4
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
 SYSTEMD_DIR=/etc/systemd/system
@@ -48,6 +49,45 @@ warn(){ printf '%s⚠ %s%s\n' "$YELLOW" "$*" "$RESET"; }
 err(){ printf '%s✖ %s%s\n' "$RED" "$*" "$RESET" >&2; }
 need_root(){ [[ $EUID == 0 ]] || { err "$(L '需要 root 权限' 'Root privileges required')"; exit 1; }; }
 confirm(){ local answer; read -r -p "$1 $(L '[输入 YES 确认]' '[Type YES to confirm]'): " answer || return 1; [[ $answer =~ ^[[:space:]]*[Yy][Ee][Ss][[:space:]]*$ ]]; }
+startup_service_info(){
+ local label=$1 installed=$2 unit=$3 value
+ if command -v systemctl >/dev/null && systemctl is-active --quiet "$unit" 2>/dev/null; then
+  value=$(L '运行中' 'Running')
+ elif [[ $installed == true ]]; then value=$(L '已安装，未运行' 'Installed, inactive')
+ else value=$(L '未安装' 'Not installed'); fi
+ printf '  %s: %s\n' "$label" "$value"
+}
+startup_info(){
+ local os kernel arch virtual ipv4 ipv6 sb=false argo=false nginx=false
+ # shellcheck disable=SC1090
+ os=$( ( . "$OS_RELEASE"; printf '%s' "${PRETTY_NAME:-${ID:-}}" ) 2>/dev/null) || os=''
+ os=${os:-$(L '未知' 'Unknown')}
+ kernel=$(uname -r 2>/dev/null) || kernel=$(L '未知' 'Unknown')
+ arch=$(uname -m 2>/dev/null) || arch=$(L '未知' 'Unknown')
+ case $arch in x86_64) arch=amd64;; aarch64) arch=arm64;; esac
+ virtual=$(L '未知' 'Unknown')
+ if command -v systemd-detect-virt >/dev/null; then virtual=$(systemd-detect-virt 2>/dev/null) || virtual=${virtual:-none}; fi
+ ipv4=''; ipv6=''
+ if command -v ip >/dev/null; then
+  ipv4=$(ip -o -4 addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd ', ' -) || ipv4=''
+  ipv6=$(ip -o -6 addr show scope global 2>/dev/null | awk '{print $4}' | paste -sd ', ' -) || ipv6=''
+ fi
+ [[ ! -x $BIN ]] || sb=true
+ if [[ -x $BASE/cloudflared ]] || command -v cloudflared >/dev/null; then argo=true; fi
+ if command -v nginx >/dev/null; then nginx=true; fi
+ printf '%s\n----------------------------------------------\n' "$GREEN"
+ say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
+ say '功能更新：小火箭专用链接与二维码、分类菜单、Argo 临时/固定隧道' 'Features: native Shadowrocket links and QR codes, grouped menus, Quick/Named Argo'
+ say '系统信息：' 'System information:'
+ printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
+ printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
+ startup_service_info sing-box "$sb" sing-box.service
+ startup_service_info Argo "$argo" skybyte-argo-tunnel.service
+ startup_service_info Nginx "$nginx" nginx.service
+ say 'IP 为本机网卡地址；公网出口和归属地可在 IP 信息菜单查询。' 'IPs are local interface addresses; use IP information for public egress and location.'
+ printf '%s\n' "$RESET"
+}
+
 notice(){ if [[ "$LANGUAGE_CHOICE" == en_US ]]; then cat <<'EOF_EN'
 [LEGAL & PRIVACY NOTICE] Use only for lawful networking education and server administration. You must comply with applicable law and service terms. Updating software or changing firewall/network settings may interrupt service or cause data loss; make backups first. Provided as-is to the extent permitted by law. Third-party components retain their licenses.
 Installation and updates can contact github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org for your public IPv4. The optional IP report queries ipinfo.io, which may retain your IP and request metadata; reports are stored locally in /etc/singbox-v2/reports and deleted after 30 days. No developer telemetry and no intentional upload of node credentials. Auto-update is opt-in. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
@@ -334,6 +374,26 @@ subscription_text=base64.b64encode(node_text.encode()).decode()+'\n'
 write('nodes.txt',node_text); write('subscription-base64.txt',subscription_text)
 write('v2rayn-nodes.txt',node_text); write('v2rayn-subscription.txt',subscription_text)
 write('shadowrocket-nodes.txt',node_text); write('shadowrocket-subscription.txt',subscription_text)
+# Shadowrocket's native VLESS dialect: base64(auto:UUID@host:port).
+# Keep standard exports intact for existing consumers.
+rocket_links=[]
+for link,name in zip(links,link_names):
+ u=urllib.parse.urlsplit(link)
+ if u.scheme!='vless':
+  rocket_links.append(link);continue
+ q=dict(urllib.parse.parse_qsl(u.query));host=u.hostname
+ address='['+host+']' if ':' in host else host
+ authority=base64.b64encode(('auto:'+u.username+'@'+address+':'+str(u.port)).encode()).decode()
+ options={'remarks':name,'tls':'1','allowInsecure':'0','peer':q['sni']}
+ if q.get('security')=='reality':
+  options.update(xtls='2',pbk=q['pbk'],sid=q['sid'],fp=q['fp'])
+ elif q.get('type')=='ws':
+  options.update(obfs='websocket',obfsParam=q['host'],path=q['path'],alpn=q.get('alpn','http/1.1'))
+ rocket_links.append('vless://'+authority+'?'+urllib.parse.urlencode(options,quote_via=urllib.parse.quote))
+rocket_text='\n'.join(rocket_links)+'\n'
+write('shadowrocket-native-nodes.txt',rocket_text)
+write('shadowrocket-native-subscription.txt',base64.b64encode(rocket_text.encode()).decode()+'\n')
+
 out=[];proxy=[]
 if mode!='2':
  out.append({'type':'vless','tag':reality_name,'server':ip,'server_port':vp,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
@@ -444,6 +504,11 @@ sensitive(clash_yaml)
 section('sing-box JSON', ['sing-box-client.json','outbounds.json'])
 info(tr('完整客户端配置，默认使用首个节点；outbounds.json 为合并用片段。','Complete client config using the first node by default; outbounds.json is a merge fragment.'))
 sensitive(client_json)
+section(tr('小火箭专用链接 / Shadowrocket','Shadowrocket native links'), ['shadowrocket-native-nodes.txt','shadowrocket-native-subscription.txt'])
+for link,name in zip(rocket_links,link_names):
+ info(tr('节点名称：','Node name: ')+name)
+ sensitive(link)
+ print(separator)
 section(tr('小火箭 / Shadowrocket 订阅','Shadowrocket subscription'), ['shadowrocket-nodes.txt','shadowrocket-subscription.txt'])
 info(tr('以下为本地 Base64 订阅内容；不是在线订阅 URL。单节点可从 shadowrocket-nodes.txt 复制。','Local Base64 subscription content below; this is not a hosted subscription URL. Copy individual URIs from shadowrocket-nodes.txt.'))
 sensitive(subscription_text)
@@ -759,6 +824,28 @@ traffic(){
  4) require_cmd vnstat && vnstat -l;; 5) require_cmd vnstat && vnstat;; 0) return;; *) err "$(L '无效选择' 'Invalid choice')";; esac
  return 0
 }
+shadowrocket_qr(){
+ check_owned || return 1
+ if ! command -v qrencode >/dev/null; then
+  say '安装二维码工具 qrencode...' 'Installing qrencode...'
+  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y qrencode || return 1
+ fi
+ exports >/dev/null || return 1
+ warn "$(L '二维码包含节点凭据，请勿公开。HY2 自签名节点仍需配置信任证书。' 'QR codes contain node credentials; keep them private. Self-signed HY2 still requires certificate trust.')"
+ local link name count=0
+ while IFS= read -r link; do
+  [[ -n $link ]] || continue
+  name=$(printf '%s' "$link" | python3 -c 'import sys,urllib.parse; u=urllib.parse.urlsplit(sys.stdin.read()); print(urllib.parse.unquote(u.fragment) if u.fragment else dict(urllib.parse.parse_qsl(u.query)).get("remarks","Shadowrocket"))') || return 1
+  printf '%s\n' '----------------------------------------------'
+  printf '%s%s%s\n' "$YELLOW" "$name" "$RESET"
+  # Feed credentials via stdin; keep the QR high-contrast for phone cameras.
+  printf '%s' "$link" | qrencode -t ANSIUTF8 -m 2 || return 1
+  count=$((count+1))
+ done < "$BASE/shadowrocket-native-nodes.txt"
+ printf '%s\n' '----------------------------------------------'
+ (( count > 0 )) || { err "$(L '没有可生成二维码的节点' 'No nodes available for QR codes')"; return 1; }
+}
+
 subscription(){
  check_owned || return
  warn "$(L '仅生成本地订阅文件；不会开启公开的 HTTP/HTTPS 订阅服务。' 'Local subscription files only; no public HTTP/HTTPS service will be started.')"
@@ -1097,7 +1184,7 @@ PY
  # Remove explicit managed files only; never recursively delete user configuration directories.
  rm -f -- "$unit" "$SYSTEMD_DIR/singbox-v2-update.service" "$SYSTEMD_DIR/singbox-v2-update.timer" "$SYSTEMD_DIR/singbox-v2-hop.service" "$BIN" "$CONF"
  while IFS= read -r file; do if [[ -n $file ]]; then rm -f -- "$file"; fi; done <<<"$managed_certs"
- for file in state.json language.conf hop.nft nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
+ for file in state.json language.conf hop.nft nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt shadowrocket-native-nodes.txt shadowrocket-native-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
  # Remove executable copies only when they are identifiable manager scripts.
  for file in "$MANAGER_BIN" "$MANAGER_LIB"; do
   if [[ -f $file && ! -L $file ]] && grep -q '^# SKYBYTE Manager V2.1 community manager;' "$file"; then rm -f -- "$file"; fi
@@ -1122,6 +1209,7 @@ sub_menu(){
    say ' 1. 查看节点与各客户端格式' ' 1. View nodes and client formats'
    say ' 2. 导出本地订阅' ' 2. Export local subscriptions'
    say ' 3. 自定义节点名称' ' 3. Customize node names'
+   say ' 4. 小火箭节点二维码' ' 4. Shadowrocket node QR codes'
    ;;
   3)
    say ' 1. sing-box 状态与启停' ' 1. sing-box status and controls'
@@ -1162,6 +1250,7 @@ sub_menu(){
   2:1) MAIN_ACTION=nodes;;
   2:2) MAIN_ACTION=subscription;;
   2:3) MAIN_ACTION=rename;;
+  2:4) MAIN_ACTION=qr;;
   3:1) MAIN_ACTION=service;;
   3:2) MAIN_ACTION=logs;;
   3:3) MAIN_ACTION=argo_status;;
@@ -1187,17 +1276,18 @@ sub_menu(){
 dispatch_action(){
  case $1 in
  install_reality) install_protocol 1;; install_hy2) install_protocol 2;; install_dual) install_protocol 3;;
- argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;;
+ argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;; qr) shadowrocket_qr;;
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
  ip) ipcheck;; network) netcheck;; hy2_check) hy2_diagnostics;;
  update) update;; auto) configure_auto;; backup) backup;; restore) restore;;
- language) select_language;; notice) notice;; uninstall) uninstall_manager;;
+ language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;
  esac
 }
 main(){
  need_root; require_cmd flock
  local group action_status
+ startup_info
  while :; do
   printf '%s\n==============================================\n' "$CYAN"
   cat <<'LOGO'

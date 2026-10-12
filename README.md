@@ -119,3 +119,9 @@ GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审�
 临时模式无需账号和域名，重启后地址变化，需要刷新并重新导入。[Cloudflare 将临时隧道定位为测试用途，不保证可用性](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/)。固定模式需要先在账号中创建远程管理隧道及公开主机名：HTTP 服务指向 `http://127.0.0.1:8080`（以实际选择端口为准），启用 WebSocket，避免交互式 Access 登录。本地输入主机名和 Token；脚本不自动配置账号 DNS 或路由。
 
 支持状态、启动、停止、重启、刷新和卸载。注册成功不代表端到端可用；断开时不导出旧临时地址。Token 权限为 600，通过 `--token-file` 使用，不进入客户端导出，私密备份包含 Token。卸载保留账号隧道和 DNS，恢复后重新注册再导出。cloudflared 官方下载通过 SHA-256 校验。
+
+菜单 **2 → 4** 显示小火箭节点二维码，每个已安装且可导出的节点单独生成，用虚线分隔。使用小火箭扫码导入；缺少工具时安装 Ubuntu/Debian 的 `qrencode` 软件包。链接通过标准输入在本机编码，不保存二维码图片。HY2 自签名仍需配置信任证书，二维码请勿公开。
+
+新增小火箭专用链接文件 `shadowrocket-native-nodes.txt` 及 Base64 列表 `shadowrocket-native-subscription.txt`。VLESS 使用 Base64 地址和 remarks/peer/xtls 参数，参考 [Xboard 小火箭导出实现](https://github.com/cedar2025/Xboard/blob/master/app/Protocols/Shadowrocket.php)。菜单 2 → 4 使用专用链接生成二维码。原有标准文件保留，HY2 沿用开启验证的链接；专用格式尚未进行小火箭图形客户端实测。
+
+进入交互菜单及切换语言后显示绿色加粗的版本和系统概览：操作系统、内核、架构、虚拟化、网卡 IPv4/IPv6，以及服务安装/运行状态。启动不查询第三方归属地；公网出口和归属地使用 IP 信息菜单查询。可选探测命令缺失不影响打开菜单。

@@ -729,6 +729,78 @@ time.sleep(60)
         snapshots=list(self.backups.iterdir());self.assertEqual(len(snapshots),1)
         self.assertTrue((snapshots[0]/'argo.token').exists())
 
+    def test_startup_info_uses_local_system_and_actual_service_state(self):
+        code="""uname(){ case "$1" in -r) echo test-kernel;; -m) echo x86_64;; esac; }
+systemd-detect-virt(){ echo kvm; }
+ip(){ case "$*" in *-4*) echo '2: eth0 inet 192.0.2.10/24 scope global eth0';; *-6*) echo '2: eth0 inet6 2001:db8::10/64 scope global';; esac; }
+systemctl(){ [[ "$*" == 'is-active --quiet sing-box.service' ]]; }
+nginx(){ :; }
+curl(){ echo SHOULD_NOT_QUERY_NETWORK; return 1; }
+startup_info"""
+        for lang,os_label,running in [('en_US','OS','Running'),('zh_CN','操作系统','运行中')]:
+            result=self.shell('LANGUAGE_CHOICE='+lang+'; '+code)
+            self.assertIn(os_label+': Debian',result.stdout)
+            for value in ['test-kernel','amd64','kvm','192.0.2.10/24','2001:db8::10/64','sing-box: '+running]:
+                self.assertIn(value,result.stdout)
+            self.assertNotIn('SHOULD_NOT_QUERY_NETWORK',result.stdout)
+
+    def test_startup_info_handles_unavailable_optional_commands(self):
+        result=self.shell('OS_RELEASE=/nonexistent; BIN=/nonexistent; systemctl(){ return 1; }; ip(){ return 1; }; systemd-detect-virt(){ return 1; }; startup_info')
+        self.assertIn('OS: Unknown',result.stdout)
+        self.assertIn('IPv4: Not detected',result.stdout)
+        self.assertIn('sing-box: Not installed',result.stdout)
+
+    def test_shadowrocket_native_links_roundtrip_credentials_and_security(self):
+        import urllib.parse
+        self.configure('3');self.shell('rename_node',input='香港 #1 & /\n')
+        original=(self.base/'nodes.txt').read_text().splitlines()
+        native=(self.base/'shadowrocket-native-nodes.txt').read_text().splitlines()
+        u=urllib.parse.urlsplit(native[0]);q=dict(urllib.parse.parse_qsl(u.query))
+        self.assertEqual(base64.b64decode(u.netloc).decode(),'auto:'+self.uuid+'@127.0.0.1:443')
+        self.assertEqual(q['remarks'],'香港 #1 & /-Reality')
+        self.assertEqual(q['xtls'],'2');self.assertEqual(q['tls'],'1');self.assertEqual(q['allowInsecure'],'0')
+        standard=dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(original[0]).query))
+        for k in ['pbk','sid','fp']:self.assertEqual(q[k],standard[k])
+        self.assertEqual(q['peer'],standard['sni'])
+        self.assertEqual(native[1],original[1])
+        self.assertEqual(base64.b64decode((self.base/'shadowrocket-native-subscription.txt').read_text()).decode(),'\n'.join(native)+'\n')
+        for name in ['shadowrocket-native-nodes.txt','shadowrocket-native-subscription.txt']:
+            self.assertEqual((self.base/name).stat().st_mode & 0o777,0o600)
+        self.assertEqual((self.base/'shadowrocket-nodes.txt').read_text(),(self.base/'nodes.txt').read_text())
+
+    def test_shadowrocket_native_argo_preserves_ws_and_verified_tls(self):
+        import urllib.parse
+        self.configure('2');self.shell('argo_write_config "$BASE" named node.example 8080 SKYBYTE')
+        state=json.loads((self.base/'argo-state.json').read_text());state['connected']=True
+        (self.base/'argo-state.json').write_text(json.dumps(state));self.shell('exports')
+        u=urllib.parse.urlsplit((self.base/'shadowrocket-native-nodes.txt').read_text().splitlines()[-1])
+        q=dict(urllib.parse.parse_qsl(u.query))
+        self.assertEqual(q['obfs'],'websocket');self.assertEqual(q['obfsParam'],'node.example')
+        self.assertEqual(q['peer'],'node.example');self.assertEqual(q['allowInsecure'],'0')
+        self.assertNotIn('xtls',q);self.assertNotIn('pbk',q)
+        origin=json.loads((self.base/'argo-server.json').read_text())['inbounds'][0]
+        self.assertEqual(q['path'],origin['transport']['path'])
+        self.assertEqual(base64.b64decode(u.netloc).decode(),'auto:'+origin['users'][0]['uuid']+'@node.example:443')
+
+    def test_shadowrocket_qr_uses_exact_links_via_stdin(self):
+        self.exported('3')
+        self.shell('rename_node',input='HK %20 #1 & /\n')
+        expected=(self.base/'shadowrocket-native-nodes.txt').read_text().splitlines()
+        capture=self.root/'qr-input.txt'
+        result=self.shell('qrencode(){ [[ "$*" == "-t ANSIUTF8 -m 2" ]] || return 1; cat >> '+shlex.quote(str(capture))+'; echo >> '+shlex.quote(str(capture))+'; echo QR; }; shadowrocket_qr')
+        self.assertEqual(capture.read_text().splitlines(),expected)
+        self.assertEqual(result.stdout.count('\nQR\n'),len(expected))
+        self.assertIn('certificate trust',result.stdout)
+        self.assertIn('HK %20 #1 & /-Reality',result.stdout)
+        self.assertNotIn(self.password,result.stdout)
+        result=self.shell('sub_menu 2; echo "$MAIN_ACTION"',input='4\n')
+        self.assertTrue(result.stdout.rstrip().endswith('qr'))
+
+    def test_shadowrocket_qr_stops_when_encoder_fails(self):
+        self.exported('2')
+        result=self.shell('qrencode(){ return 1; }; shadowrocket_qr',ok=False)
+        self.assertNotEqual(result.returncode,0)
+
     def test_grouped_menu_dispatches_without_renumbering_function_logic(self):
         for language,label in [('en_US','Nodes and subscriptions'),('zh_CN','节点与订阅')]:
             code='need_root(){ :; }; flock(){ :; }; exports(){ echo EXPORTED; }; LANGUAGE_CHOICE='+language+'; main'
