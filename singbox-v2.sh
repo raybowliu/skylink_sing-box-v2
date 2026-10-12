@@ -45,14 +45,14 @@ export LANGUAGE_CHOICE
 exec 9>"$LOCK"; flock -n 9 || { echo "$(L '其他管理任务正在运行' 'Another management task is already running')"; exit 1; }
 err(){ echo "错误：$*" >&2; }
 need_root(){ [[ $EUID == 0 ]] || { err "$(L '需要 root 权限' 'Root privileges required')"; exit 1; }; }
-confirm(){ local answer; read -r -p "$1 $(L '[输入 YES 确认]' '[Type YES to confirm]'): " answer; [[ $answer == YES ]]; }
+confirm(){ local answer; read -r -p "$1 $(L '[输入 YES 确认]' '[Type YES to confirm]'): " answer; [[ "${answer,,}" == yes ]]; }
 notice(){ if [[ "$LANGUAGE_CHOICE" == en_US ]]; then cat <<'EOF_EN'
 [LEGAL & PRIVACY NOTICE] Use only for lawful networking education and server administration. You must comply with applicable law and service terms. Updating software or changing firewall/network settings may interrupt service or cause data loss; make backups first. Provided as-is to the extent permitted by law. Third-party components retain their licenses.
-Installation and updates can contact sing-box.app, github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org for your public IPv4. The optional IP report queries ipinfo.io, which may retain your IP and request metadata; reports are stored locally in /etc/singbox-v2/reports and deleted after 30 days. No developer telemetry and no intentional upload of node credentials. Auto-update is opt-in. HY2 requires a domain and valid TLS certificate; TLS verification is not bypassed by default.
+Installation and updates can contact sing-box.app, github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org for your public IPv4. The optional IP report queries ipinfo.io, which may retain your IP and request metadata; reports are stored locally in /etc/singbox-v2/reports and deleted after 30 days. No developer telemetry and no intentional upload of node credentials. Auto-update is opt-in. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
 EOF_EN
 else cat <<'EOF'
 【法律与隐私披露】此工具仅供合法网络技术学习和服务器管理；使用者应遵守适用法律和服务条款。更改防火墙、网络参数及更新软件可能导致中断或损失，请提前备份。软件按现状提供，不排除依法不得排除的责任。第三方软件遵循其许可证。
-安装/更新可能连接：sing-box.app、github.com、api.github.com、GitHub 发布文件 CDN，访问服务会暴露请求来源 IP。安装时 api.ipify.org 用于识别出口 IP。可选 IP 检测使用 ipinfo.io，报告保存在本地 /etc/singbox-v2/reports，默认保留 30 天；第三方可能记录来源 IP、查询目标和请求时间。无开发者遥测或上传节点密钥；请勿公开包含凭据的配置和导出文件。自动更新默认关闭。HY2 需自有域名及有效 TLS 证书；不会默认跳过证书校验。
+安装/更新可能连接：sing-box.app、github.com、api.github.com、GitHub 发布文件 CDN，访问服务会暴露请求来源 IP。安装时 api.ipify.org 用于识别出口 IP。可选 IP 检测使用 ipinfo.io，报告保存在本地 /etc/singbox-v2/reports，默认保留 30 天；第三方可能记录来源 IP、查询目标和请求时间。无开发者遥测或上传节点密钥；请勿公开包含凭据的配置和导出文件。自动更新默认关闭。HY2 必须有 TLS 证书，无域名用户可生成自签名证书，客户端必须正确配置信任，不能默认跳过证书验证。
 EOF
 fi
 }
@@ -83,18 +83,37 @@ EOF
  systemctl daemon-reload; }
 # If an official package created a service, do not replace it: install requires a clean VPS.
 install(){
- need_root; notice; confirm "$(L '同意声明并安装双协议？' 'Accept notice and install both protocols?')" || return 0
+ need_root
+ local mode cert_mode="" 
+ printf '\033[1;32m%s\033[0m\n' "$(L '1 Reality 单协议 | 2 HY2 单协议 | 3 双协议 | 0 返回' '1 Reality only | 2 HY2 only | 3 Dual | 0 Back')"
+ read -r -p '> ' mode || return
+ [[ "$mode" == 0 ]] && return
+ [[ "$mode" =~ ^[123]$ ]] || { err "Invalid selection"; return 1; }
+ notice; confirm "$(L '同意声明并安装所选协议？' 'Accept notice and install selected protocol(s)?')" || return 0
  [[ ! -e $CONF && ! -e $META ]] || { err '发现已有配置，拒绝覆盖'; return 1; }
  if systemctl list-unit-files sing-box.service --no-legend 2>/dev/null | grep -q sing-box; then err '已有 sing-box 服务，拒绝覆盖'; return 1; fi
  for x in sing-box xray nginx; do :; done
- if ss -H -ltn '( sport = :443 )' | grep -q . || ss -H -lun '( sport = :443 )' | grep -q .; then err 'TCP 或 UDP 443 已被占用'; return 1; fi
- read -r -p "$(L 'HY2 域名（需已有有效证书）：' 'HY2 domain (valid TLS certificate required): ')" domain
- [[ $domain =~ ^[a-zA-Z0-9.-]+$ && $domain == *.* ]] || { err '域名格式不正确'; return 1; }
- read -r -p "$(L 'TLS 完整证书路径（PEM）：' 'Full TLS certificate path (PEM): ')" cert
- read -r -p "$(L 'TLS 私钥路径（PEM）：' 'TLS private key path (PEM): ')" key
- [[ -f $cert && -f $key ]] || { err '证书或私钥文件不存在'; return 1; }
- read -r -p "$(L 'Reality 握手域名 [addons.mozilla.org]：' 'Reality handshake domain [addons.mozilla.org]: ')" sni; sni=${sni:-addons.mozilla.org}
- [[ $sni =~ ^[a-zA-Z0-9.-]+$ ]] || { err 'SNI 格式错误'; return 1; }
+ if [[ $mode != 2 ]] && ss -H -ltn '( sport = :443 )' | grep -q .; then err 'TCP 443 is occupied'; return 1; fi
+ if [[ $mode != 1 ]] && ss -H -lun '( sport = :443 )' | grep -q .; then err 'UDP 443 is occupied'; return 1; fi
+ local domain="" cert="" key="" sni=""
+ if [[ $mode != 1 ]]; then
+  echo "$(L 'HY2证书: 1 无域名(自动自签名)  2 已有证书' 'HY2 certificate: 1 No domain (self-signed)  2 Existing certificate')"
+  read -r -p '> ' cert_mode
+  case "$cert_mode" in
+   1) echo "$(L '需要客户端安全地导入证书并启用验证。' 'Client must securely import and verify the certificate.')";;
+   2) read -r -p "$(L '证书域名：' 'Certificate domain: ')" domain
+      [[ $domain =~ ^[a-zA-Z0-9.-]+$ && $domain == *.* ]] || { err 'Invalid domain'; return 1; }
+      read -r -p "$(L 'TLS 完整证书路径：' 'TLS fullchain path: ')" cert
+      read -r -p "$(L 'TLS 私钥路径：' 'TLS key path: ')" key
+      [[ -f $cert && -f $key ]] || { err 'Certificate/key missing'; return 1; };;
+   *) err 'Invalid certificate option'; return 1;;
+  esac
+ fi
+ if [[ $mode != 2 ]]; then
+  read -r -p "$(L 'Reality 握手域名 [addons.mozilla.org]：' 'Reality handshake [addons.mozilla.org]: ')" sni
+  sni=${sni:-addons.mozilla.org}
+  [[ $sni =~ ^[a-zA-Z0-9.-]+$ ]] || { err 'Invalid SNI'; return 1; }
+ fi
  echo "$(L '安装依赖...' 'Installing dependencies...')"; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables || return 1
  require_cmd getent; getent ahostsv4 github.com >/dev/null || { err 'GitHub DNS 解析失败，请先修复 DNS'; return 1; }
  installer || { err '官方安装失败'; return 1; }
@@ -112,36 +131,48 @@ import ipaddress,sys
 assert ipaddress.ip_address(sys.argv[1]).is_global
 PY
  mkdir -p /etc/sing-box
- python3 - "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" <<'PY'
+ if [[ $cert_mode == 1 ]]; then
+  domain="$ip"; cert=/etc/sing-box/hy2-selfsigned.crt; key=/etc/sing-box/hy2-selfsigned.key
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=IP:$ip" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
+  chmod 600 "$key"; chmod 644 "$cert"
+ fi
+ python3 - "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode" <<'PY'
 import json,sys
-conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip=sys.argv[1:]
+conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:]
 d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
+if mode=='1': d['inbounds']=d['inbounds'][:1]
+elif mode=='2': d['inbounds']=d['inbounds'][1:]
 with open(conf,'w') as f:json.dump(d,f,indent=2)
-with open(meta,'w') as f:json.dump({'ip':ip,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
+with open(meta,'w') as f:json.dump({'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'ip':ip,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
 PY
  chmod 600 "$CONF" "$META"
  "$BIN" check -c "$CONF" || { err '配置检查失败'; return 1; }
  # Official installation's service may have been installed by installer. Keep its unit if present.
  setup_service
- if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow 443/tcp; ufw allow 443/udp; fi
+ if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then [[ $mode != 2 ]] && ufw allow 443/tcp; [[ $mode != 1 ]] && ufw allow 443/udp; fi
  systemctl daemon-reload; systemctl enable --now sing-box; systemctl restart sing-box
  sleep 2; systemctl is-active --quiet sing-box || { err '服务启动失败，请查看 journalctl -u sing-box'; return 1; }
- echo '部署完成。确认云防火墙已放行 TCP/UDP 443。'; exports
+ if [[ $cert_mode == 1 ]]; then echo "$(L '自签名证书：' 'Self-signed certificate: ')$cert"; openssl x509 -in "$cert" -noout -fingerprint -sha256; echo "$(L '务必将证书安全导入客户端并验证，链接本身不足以建立信任。' 'Securely import and verify certificate on client; URL alone cannot establish trust.')"; fi
+ echo '部署完成。按实际协议检查云防火墙。'; exports
 }
 exports(){ check_owned || return; python3 - "$META" "$BASE" <<'PY'
 import json,sys,urllib.parse,os
-s=json.load(open(sys.argv[1]));ip=s['ip'];u=s['uuid'];sid=s['sid'];pk=s['public_key'];p=s['hy2_password'];d=s['domain'];sni=s['sni']
+s=json.load(open(sys.argv[1]));ip=s['ip'];u=s['uuid'];sid=s['sid'];pk=s['public_key'];p=s['hy2_password'];d=s['domain'];sni=s['sni'];mode=s.get('mode','3')
 v=f'vless://{u}@{ip}:443?'+urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':pk,'sid':sid,'type':'tcp'})+'#Reality'
 h=f'hysteria2://{p}@{ip}:443?'+urllib.parse.urlencode({'sni':d})+'#HY2'
 path=os.path.join(sys.argv[2],'nodes.txt')
-with open(path,'w') as f:f.write(v+'\n'+h+'\n')
+links=([v] if mode=='1' else [h] if mode=='2' else [v,h])
+with open(path,'w') as f:f.write('\n'.join(links)+'\n')
 os.chmod(path,0o600)
 print('节点文件：'+path+'（包含敏感登录信息）')
-print('Reality:\n'+v+'\nHY2:\n'+h)
+print('\n'.join(links))
+if s.get('cert_mode')=='1' and mode!='1': print('WARNING: HY2 requires secure client trust of '+s['cert_path']+'; the URI alone is insufficient.')
 if s.get('hop'): print('端口跳跃：',s['hop_start'], '-',s['hop_end'],'；HY2 通用 URI 不包含跳跃设置，请使用 sing-box JSON 配置。')
 # Export outbound fragment (not a complete client configuration)
 out=[{'type':'vless','tag':'Reality','server':ip,'server_port':443,'uuid':u,'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':pk,'short_id':sid}}},{'type':'hysteria2','tag':'HY2','server':ip,'server_port':443,'password':p,'tls':{'enabled':True,'server_name':d}}]
-if s.get('hop'):out[1].update({'server_ports':[f"{s['hop_start']}:{s['hop_end']}"],'hop_interval':'30s'})
+if mode=='1':out=out[:1]
+elif mode=='2':out=out[1:]
+if s.get('hop') and mode!='1':out[-1].update({'server_ports':[f"{s['hop_start']}:{s['hop_end']}"],'hop_interval':'30s'})
 with open(os.path.join(sys.argv[2],'outbounds.json'),'w') as f:json.dump(out,f,ensure_ascii=False,indent=2)
 PY
 }
@@ -155,7 +186,7 @@ p=sys.argv[1];d=json.load(open(p));d['hop']=False
 with open(p,'w') as f:json.dump(d,f,indent=2)
 PY
  fi; echo "$(L '已关闭本工具管理的端口跳跃规则' 'Disabled managed port-hopping rules')"; }
-hop(){ check_owned || return; require_cmd nft; echo "$(L '端口跳跃仅支持 IPv4，规则通过专属 systemd 服务持久化。请同步修改云防火墙。' 'Port hopping is IPv4 only and uses a dedicated systemd service. Also configure your provider firewall.')"; echo "$(L '1 开启  2 关闭' '1 Enable  2 Disable')"; read -r -p '> ' choice
+hop(){ check_owned || return; [[ "$(state mode)" != 1 ]] || { err 'HY2 not installed'; return 1; }; require_cmd nft; echo "$(L '端口跳跃仅支持 IPv4，规则通过专属 systemd 服务持久化。请同步修改云防火墙。' 'Port hopping is IPv4 only and uses a dedicated systemd service. Also configure your provider firewall.')"; echo "$(L '1 开启  2 关闭' '1 Enable  2 Disable')"; read -r -p '> ' choice
  if [[ $choice == 2 ]]; then confirm "$(L '关闭端口跳跃？' 'Disable HY2 port hopping?')" && { systemctl disable --now singbox-v2-hop.service 2>/dev/null || :; hop_disable; }; return; fi
  [[ $choice == 1 ]] || return
  read -r -p "$(L '起始端口 [20000]: ' 'Start port [20000]: ')" start; start=${start:-20000}; read -r -p "$(L '结束端口 [30000]: ' 'End port [30000]: ')" end; end=${end:-30000}
@@ -282,9 +313,9 @@ initialize_server(){
 main(){ need_root; require_cmd flock
  while :; do
  if [[ "$LANGUAGE_CHOICE" == en_US ]]; then
- cat <<'MENU_EN'
+ printf '\033[1;32m'; cat <<'MENU_EN'
 ================ sing-box V2.0 ================
- 1 Install dual protocols  2 View/export nodes
+ 1 Install Reality / HY2 / Dual  2 View/export nodes
  3 Service & firewall     4 Enable BBR + FQ
  5 HY2 port hopping       6 Check/update sing-box
  7 Weekly auto-update     8 Backup config
@@ -296,9 +327,9 @@ main(){ need_root; require_cmd flock
 ================================================
 MENU_EN
  else
- cat <<'MENU_ZH'
+ printf '\033[1;32m'; cat <<'MENU_ZH'
 ================ sing-box V2.0 ================
- 1 安装双协议       2 查看/导出节点
+ 1 安装 Reality / HY2 / 双协议       2 查看/导出节点
  3 服务/防火墙状态  4 开启 BBR + FQ
  5 HY2 端口跳跃     6 手动检查更新
  7 每周自动更新     8 备份配置
@@ -310,6 +341,7 @@ MENU_EN
 ================================================
 MENU_ZH
  fi
+ printf '\033[0m'
  read -r -p "$(L '选择：' 'Choose: ')" x
  case "$x" in
  14) initialize_server;; 15) select_language;;
