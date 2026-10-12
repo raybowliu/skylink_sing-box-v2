@@ -1,0 +1,59 @@
+# Audit and testing / 审计与测试
+
+## Reviewed baseline / 检查范围
+
+All four baseline files were read: `singbox-v2.sh`, `install.sh`, `README.md`, `README_EN.md`. The user's Desktop copies were compared byte-for-byte and match the original GitHub revision.
+
+## Problems and fixes / 问题与修复
+
+| Original problem | Change |
+| --- | --- |
+| Function `install()` shadowed the system executable; enabling auto-update called the protocol installer | Renamed to `install_protocol`; system file installation explicitly uses `command install` |
+| Backup config directory and binary shared the same pathname | Separate `config/` and `sing-box.bin`; snapshot external TLS files; restore with rollback |
+| Binary copy could copy onto itself | Install official release directly into the managed binary path |
+| Update executed a package installer that could alter config/service | Download only a checksum-verified binary; validate candidate before replacing; shared manual/automatic update path |
+| Self-signed exports only had placeholders; links failed certificate trust | Embed public cert in sing-box JSON and Mihomo trust settings; export PEM and fingerprint; preserve certificate verification |
+| Existing TLS files were accepted without validation | Check expiry, hostname/IP, and public/private key matching |
+| HY2 URI did not encode arbitrary credentials | Percent-encode authentication before creating the URI |
+| Protocol selection trusted stale metadata | Detect active protocol types from actual server inbounds |
+| SSH port detection relied on manual entry | Detect listener/config/current connection ports and require verification; preserve detected SSH rules |
+| Enabling UFW omitted existing hopping ranges | Include active UDP range and provide explicit UDP firewall audits |
+| Leading-zero/oversized ports could break arithmetic | Bound input length and use base-10 conversion |
+| Actions could end the whole menu on failure/cancellation | Isolate actions under strict mode and return to the menu; keep error output visible |
+| Installing chrony could replace active timesyncd | Avoid installing chrony when an existing time-sync service is active |
+| README menu numbers and feature claims contradicted each other | Rewritten bilingual docs matching implemented behavior |
+| No automated regression suite | Add unittest suite and Ubuntu/Debian CI |
+
+## Automated tests / 自动化测试
+
+The regression suite invokes actual Bash functions with isolated filesystem paths. Only OS-mutating commands (apt, systemctl, UFW, nftables, sysctl) are mocked; real crypto, configuration export, backup filesystem operations and protocol engine processes run where applicable.
+
+- YES case variants, port boundaries, language persistence and both branded menus.
+- Three actual server configurations and protocol detection with stale cached mode.
+- Base64/URI encoding, private file permissions, self-signed cert embedding and fingerprint.
+- Certificate hostname/IP mismatch and mismatched private key rejection.
+- External TLS backup/restore and update rejection/rollback.
+- SSH detection, UFW allow rules, UDP audit and hopping systemd persistence.
+- Initialization, BBR/FQ, daily/monthly vnStat and service restart config checks.
+- Weekly update manager executable and timer generation.
+- Matching release digest accepted; corrupted digest rejected without replacing target.
+- Real sing-box client → HY2 server → local HTTP forwarding; removing certificate trust fails.
+- Real Mihomo YAML validation and Mihomo client → sing-box HY2 server → local HTTP forwarding.
+
+Local development result: 26 tests passed, including real HY2 forwarding with both clients and rejection without certificate trust; `bash -n`, ShellCheck and `git diff --check` passed.
+
+Local development validation: macOS arm64, Bash 3.2, ShellCheck 0.11.0, OpenSSL 3.6.2, sing-box 1.14.3, Mihomo 1.19.32. CI pins the same protocol engine releases on Ubuntu 24.04 / Debian 12 with the distributions' Bash/OpenSSL/ShellCheck.
+
+```bash
+bash -n install.sh singbox-v2.sh
+shellcheck install.sh singbox-v2.sh
+SING_BOX_BIN=/path/to/sing-box MIHOMO_BIN=/path/to/mihomo python3 -m unittest discover -s tests -v
+```
+
+Without engine paths, engine-specific tests are skipped. PyYAML is required for Mihomo tests. All credentials, keys, certificates and generated exports stay in temporary directories.
+
+## Remaining live validation / 真实 VPS 验收
+
+No production VPS was provided. The automated suite does not claim to test real apt upgrades, systemd boot persistence, kernel BBR behavior, UFW/nftables packet processing, provider firewalls or Shadowrocket/v2rayN GUI imports.
+
+On a disposable Ubuntu/Debian VPS, verify all three installation modes, real certificate chain validation, trusted self-signed client imports, IPv4 hopping through UFW and cloud security groups, weekly timer execution, restart/restore failure handling and reboots. Keep provider console access and a snapshot throughout. These checks should precede production rollout.
