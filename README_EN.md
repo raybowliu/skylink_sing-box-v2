@@ -31,3 +31,8 @@ At first interactive launch, choose `1` for Simplified Chinese or `2` for Englis
 The manager is for lawful networking education and server administration, subject to applicable laws and service terms. Provided as-is to the extent permitted by law; back up before making changes. It does not intentionally transmit node secrets or telemetry to the script author. Third-party services can see your source IP: installation/updates may access sing-box.app, github.com, api.github.com and GitHub CDNs; installation may use api.ipify.org; optional IP lookup uses ipinfo.io. Auto-updates are opt-in. HY2 does not disable TLS verification by default.
 
 Review the source before executing. See the Chinese `README.md` for further warnings and official documentation links.
+
+## New install modes (testing build)
+Menu 1 now offers Reality only, HY2 only, or dual protocol. HY2 accepts an existing TLS cert or can create a self-signed certificate with an IP SAN. The public certificate must be transferred securely and explicitly trusted by supported clients; a HY2 URI alone does not establish trust. Menus are bold green, and confirmation accepts YES regardless of case.
+
+**This is an unverified testing build. Bash syntax validation is not equivalent to a real VPS installation, client connectivity, upgrade, or rollback test. Do not deploy to production.**
