@@ -215,7 +215,7 @@ PY
  if [[ $cert_mode == 1 ]]; then
   [[ ! -e $(dirname "$CONF")/hy2-selfsigned.crt && ! -e $(dirname "$CONF")/hy2-selfsigned.key ]] || { err "TLS files already exist"; return 1; }
   domain="$ip"; cert="$(dirname "$CONF")/hy2-selfsigned.crt"; key="$(dirname "$CONF")/hy2-selfsigned.key"
-  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=IP:$ip" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=IP:$ip" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
   chmod 600 "$key"; chmod 644 "$cert"
  fi
  if [[ $mode != 1 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
@@ -232,9 +232,12 @@ PY
 }
 exports(){
  check_owned || return
- python3 - "$META" "$BASE" "$CONF" <<'PY'
-import base64,json,os,sys,urllib.parse,subprocess
+ python3 - "$META" "$BASE" "$CONF" "${LANGUAGE_CHOICE:-zh_CN}" <<'PY'
+import base64,json,os,sys,urllib.parse,subprocess,plistlib,uuid
 s=json.load(open(sys.argv[1]));base=sys.argv[2];ip=s['ip']
+en=sys.argv[4]=='en_US'
+def tr(zh,english): return english if en else zh
+separator='-'*64
 config=json.load(open(sys.argv[3])); inbound={i['type']:i for i in config['inbounds'] if i['type'] in ('vless','hysteria2')}
 if not inbound: raise ValueError('No supported installed protocols')
 mode='3' if len(inbound)==2 else '1' if 'vless' in inbound else '2'
@@ -259,7 +262,7 @@ h='hysteria2://{}@{}:{}?{}#SKYBYTE-HY2'.format(urllib.parse.quote(s.get('hy2_pas
 links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
 def write(name,content):
  path=os.path.join(base,name)
- with open(path,'w') as f:f.write(content)
+ with open(path,'wb' if isinstance(content,bytes) else 'w') as f:f.write(content)
  os.chmod(path,0o600)
  return path
 write('nodes.txt','\n'.join(links)+'\n'); write('subscription-base64.txt',base64.b64encode(('\n'.join(links)+'\n').encode()).decode()+'\n')
@@ -278,7 +281,30 @@ if mode!='1':
  if self_signed:mp['fingerprint']=fingerprint
  proxy.append(mp)
 write('outbounds.json',json.dumps({'outbounds':out},ensure_ascii=False,indent=2)+'\n')
-if cert_pem: write('hy2-client-ca.pem',cert_pem)
+trust_files=[]
+# Remove obsolete public trust exports, so a changed certificate cannot leave stale instructions.
+for name in ['hy2-client-ca.pem','hy2-client-ca.cer','hy2-client-ca.mobileconfig']:
+ path=os.path.join(base,name)
+ if os.path.isfile(path): os.remove(path)
+if cert_pem:
+ write('hy2-client-ca.pem',cert_pem)
+ der=ssl.PEM_cert_to_DER_cert(cert_pem)
+ write('hy2-client-ca.cer',der)
+ trust_files=['hy2-client-ca.pem','hy2-client-ca.cer']
+ # iOS root profiles require a CA certificate; never label a leaf-only cert as a CA.
+ text=subprocess.check_output(['openssl','x509','-in',s['cert_path'],'-noout','-text'],text=True)
+ if 'CA:TRUE' in text:
+  payload={'PayloadType':'com.apple.security.root','PayloadVersion':1,
+           'PayloadIdentifier':'com.skybyte.hy2.ca.'+fingerprint,
+           'PayloadUUID':str(uuid.uuid4()).upper(),'PayloadDisplayName':'SKYBYTE HY2 '+ip,
+           'PayloadCertificateFileName':'hy2-client-ca.cer','PayloadContent':der}
+  profile={'PayloadType':'Configuration','PayloadVersion':1,
+           'PayloadIdentifier':'com.skybyte.hy2.trust.'+fingerprint,
+           'PayloadUUID':str(uuid.uuid4()).upper(),'PayloadDisplayName':'SKYBYTE HY2 Trust '+ip,
+           'PayloadDescription':tr('仅包含此 HY2 自签名公开证书；核对指纹后安装并手动开启信任。','Contains only the HY2 public certificate. Verify the fingerprint before installing and manually enabling trust.'),
+           'PayloadContent':[payload]}
+  write('hy2-client-ca.mobileconfig',plistlib.dumps(profile))
+  trust_files.append('hy2-client-ca.mobileconfig')
 def scalar(x):return json.dumps(x,ensure_ascii=False) if isinstance(x,str) else ('true' if x is True else 'false' if x is False else str(x))
 def yaml_dump(v,level=0):
  lines=[]
@@ -296,14 +322,33 @@ yaml_config={'proxies':proxy}
 if cert_pem: yaml_config['tls']={'custom-certifactes':[cert_pem]}
 write('mihomo-proxies.yaml','# SKYBYTE: merge proxies AND tls trust settings with your Mihomo config.\n'+'\n'.join(yaml_dump(yaml_config))+'\n')
 notes=[]
-if mode!='1' and self_signed:notes.append('HY2 self-signed TLS: JSON/YAML include the trusted public certificate. For Shadowrocket/v2rayN securely import hy2-client-ca.pem as a trusted CA and verify its SHA256 fingerprint: ' + str(fingerprint) + ' . URI pinning support varies; keep verification enabled. Never import the private key.')
-if s.get('hop'):notes.append('Port hopping requires client-specific support, matching server NAT and cloud firewall; basic URI does NOT encode it.')
-write('subscription-notes.txt','\n'.join(notes or ['Check client support before importing.'])+'\n')
-print('SKYBYTE local files / 本地文件:')
-for name in ['nodes.txt','subscription-base64.txt','outbounds.json','mihomo-proxies.yaml','subscription-notes.txt']:print('  '+os.path.join(base,name))
-print('Sensitive node links / 节点链接（请勿公开）:')
-for link in links:print(('\033[1;31m'+link+'\033[0m') if sys.stdout.isatty() and not os.getenv('NO_COLOR') else link)
-for note in notes:print(('\033[1;33m' if sys.stdout.isatty() and not os.getenv('NO_COLOR') else '')+'WARNING: '+note+('\033[0m' if sys.stdout.isatty() and not os.getenv('NO_COLOR') else ''))
+if mode!='1' and self_signed:
+ notes += [tr('无域名模式仍使用 TLS 自签名证书；只导入链接不会自动建立信任。','No-domain mode still uses self-signed TLS; importing a URI does not establish trust.'),
+           tr('SHA-256 指纹：','SHA-256 fingerprint: ')+fingerprint,
+           tr('sing-box JSON 和 Mihomo YAML 已包含公开信任证书。','sing-box JSON and Mihomo YAML include the trusted public certificate.'),
+           tr('小火箭：通过可信 SSH/SFTP 取回公开证书，核对指纹后建立证书信任。','Shadowrocket: retrieve the public certificate via trusted SSH/SFTP, verify its fingerprint and configure certificate trust.')]
+ if 'hy2-client-ca.mobileconfig' in trust_files:
+  notes += [tr('iPhone：安装 hy2-client-ca.mobileconfig，再在设置 → 通用 → 关于本机 → 证书信任设置中开启此证书的完全信任。','iPhone: install hy2-client-ca.mobileconfig, then enable full trust in Settings > General > About > Certificate Trust Settings.'),
+            tr('这是系统信任配置；小火箭 HY2 是否使用系统信任须由连接日志验证。','This configures system trust; check connection logs to verify whether Shadowrocket HY2 uses it.')]
+ else:
+  notes.append(tr('当前证书不是 CA 证书，不能生成 iOS 根证书描述文件；使用客户端支持的自定义信任或受信任 CA 证书。','This certificate is not a CA; no iOS root profile is generated. Use supported client custom trust or a trusted CA certificate.'))
+ notes += [tr('保留 TLS 验证；不要仅为连接而打开跳过验证。不要传输服务端私钥。','Keep TLS verification enabled. Do not enable skip verification just to connect. Never transfer the server private key.'),
+           tr('仍失败时运行菜单 22；服务运行、证书信任与 UDP 可达需要分别检查。','If connection fails, run menu 22; service health, certificate trust and UDP reachability are separate checks.')]
+if s.get('hop'):notes.append(tr('端口跳跃需客户端支持，并放行本机和云防火墙 UDP 范围；普通 URI 不包含跳跃范围。','Hopping requires client support and local/provider UDP range rules; basic URIs do not include the range.'))
+write('subscription-notes.txt','\n'.join(notes or [tr('导入前核实客户端协议支持。','Check client protocol support before importing.')])+'\n')
+print(separator)
+print(tr('SKYBYTE 本地订阅文件：','SKYBYTE local subscription files:'))
+for name in ['nodes.txt','subscription-base64.txt','outbounds.json','mihomo-proxies.yaml','subscription-notes.txt']+trust_files:print('  '+os.path.join(base,name))
+color=sys.stdout.isatty() and not os.getenv('NO_COLOR')
+for link in links:
+ print(separator)
+ print(tr('节点：','Node: ')+('VLESS + Reality + Vision' if link.startswith('vless:') else 'Hysteria2'))
+ print(tr('节点链接（含凭据，请勿公开）：','Node link (contains credentials; do not publish):'))
+ print(('\033[1;31m' if color else '')+link+('\033[0m' if color else ''))
+print(separator)
+for note in notes:print(('\033[1;33m' if color else '')+tr('提示：','NOTICE: ')+note+('\033[0m' if color else ''))
+if notes:print(separator)
+
 PY
 }
 
@@ -405,11 +450,48 @@ EOF
  elif [[ $x == 2 ]]; then systemctl disable --now singbox-v2-update.timer 2>/dev/null || :; fi; }
 ipcheck(){ notice; confirm "$(L '访问 ipinfo.io 检查 IP 并保存本地报告？' 'Query ipinfo.io and save the IP report locally?')" || return 0; local stamp path; stamp=$(date +%Y%m%d-%H%M%S); path="$REPORT/ip-$stamp.json"; curl -4fsSL --max-time 20 https://ipinfo.io/json >"$path" || { rm -f "$path"; err "$(L 'IP 检测失败' 'IP lookup failed')"; return 1; }; chmod 600 "$path"; python3 -m json.tool "$path"; find "$REPORT" -type f -mtime +30 -delete; say "报告：$path；不是风险或解锁报告" "Report: $path; not a reputation/unblocking test"; }
 netcheck(){ local stamp path; stamp=$(date +%Y%m%d-%H%M%S); path="$REPORT/net-$stamp.txt"; { echo "date=$(date -Is)"; echo 'route:'; ip route get 1.1.1.1; echo 'DNS:'; getent ahostsv4 github.com | sed -n '1,3p'; echo 'HTTP:'; curl -4 -o /dev/null -sS --max-time 15 -w 'github_https_code=%{http_code} connect=%{time_connect}s total=%{time_total}s\n' https://github.com || :; echo 'TCP listeners:'; ss -lnt '( sport = :443 )'; echo 'UDP listeners:'; ss -lnu '( sport = :443 )'; } | tee "$path"; chmod 600 "$path"; find "$REPORT" -type f -mtime +30 -delete; say '仅为基础连通性，不测三网回程、UDP 丢包或吞吐量' 'Basic connectivity only; no route-back, UDP loss or throughput testing'; }
+protocol_port(){
+ python3 - "$CONF" "$1" <<'PY'
+import json,sys
+port=next(i['listen_port'] for i in json.load(open(sys.argv[1]))['inbounds'] if i['type']==sys.argv[2])
+assert isinstance(port,int) and 1<=port<=65535
+print(port)
+PY
+}
+hy2_diagnostics(){
+ check_owned || return 1
+ local port details cert key name listener
+ port=$(protocol_port hysteria2) || { err "$(L '未找到 HY2 入站' 'No HY2 inbound found')"; return 1; }
+ say '---------------- HY2 连接诊断 ----------------' '---------------- HY2 connection checks ----------------'
+ if "$BIN" check -c "$CONF"; then ok "$(L '服务端配置检查通过' 'Server configuration check passed')"; else err "$(L '服务端配置无效' 'Server configuration invalid')"; fi
+ if systemctl is-active --quiet sing-box; then ok "$(L 'sing-box 服务正在运行' 'sing-box service is active')"; else err "$(L 'sing-box 服务未运行；请查看菜单 18 日志' 'sing-box is not active; inspect menu 18 logs')"; fi
+ listener=$(ss -H -lun "( sport = :$port )") || return 1
+ if [[ -n $listener ]]; then ok "$(L "本机 UDP $port 有监听" "Local UDP $port has a listener")"; else err "$(L "本机 UDP $port 未监听" "No local UDP $port listener")"; fi
+ details=$(python3 - "$CONF" <<'PY'
+import json,sys
+c=next(i for i in json.load(open(sys.argv[1]))['inbounds'] if i['type']=='hysteria2')['tls']
+for field in ['certificate_path','key_path','server_name']:print(c[field])
+PY
+ ) || return 1
+ { read -r cert; read -r key; read -r name; } <<<"$details"
+ if validate_certificate "$cert" "$key" "$name"; then ok "$(L '证书有效期、名称与私钥匹配检查通过' 'Certificate expiry, name and key matching checks passed')"; else err "$(L '证书检查失败，请检查文件或证书身份' 'Certificate checks failed; inspect files and certificate identity')"; fi
+ openssl x509 -in "$cert" -noout -dates -fingerprint -sha256 || return 1
+ firewall_audit
+ warn "$(L '本机检查不能证明手机到 VPS 的 UDP 可达，也不能证明小火箭已信任证书。' 'Local checks do not prove phone-to-VPS UDP reachability or Shadowrocket certificate trust.')"
+ say 'certificate/x509 错误：检查客户端证书信任、SNI 和指纹。' 'certificate/x509 errors: check client certificate trust, SNI and fingerprint.'
+ say 'timeout/no recent network activity：检查本机与云防火墙 UDP，换 Wi-Fi/移动网络测试。' 'timeout/no recent network activity: inspect local/provider UDP rules and try another Wi-Fi/mobile network.'
+ say 'authentication failed：重新导出、导入节点，核对密码；不要公开节点链接。' 'authentication failed: re-export/import the node and verify password; do not publish the URI.'
+ say '请用小火箭实际连接或 URL 测试；普通 ICMP 延迟不能验证 HY2。' 'Use an actual Shadowrocket connection or URL test; ICMP latency does not validate HY2.'
+ printf '%s\n' "$(L '只读抓包命令（连接节点时执行；不显示数据包内容）：' 'Read-only packet check while connecting (does not display packet contents):')"
+ printf '  sudo timeout 15 tcpdump -nn -i any "udp port %s"\n' "$port"
+ say '---------------- 诊断结束 ----------------' '---------------- End of checks ----------------'
+}
 firewall_audit(){
  if command -v ufw >/dev/null; then
-  local rules; rules=$(LC_ALL=C ufw status); printf '%s\n' "$rules"
+  local rules hy2_port; rules=$(LC_ALL=C ufw status); printf '%s\n' "$rules"
   if [[ -f $META && $(protocol_mode) != 1 && $rules == *'Status: active'* ]]; then
-   grep -Eq '443/udp[[:space:]]+ALLOW' <<<"$rules" || warn "$(L '未检测到 UDP 443 放行，请检查规则' 'UDP 443 allow rule not detected; inspect rules')"
+   hy2_port=$(protocol_port hysteria2) || return 1
+   grep -Eq "${hy2_port}/udp[[:space:]]+ALLOW" <<<"$rules" || warn "$(L "未检测到 UDP $hy2_port 放行，请检查规则" "UDP $hy2_port allow rule not detected; inspect rules")"
    if [[ $(state hop) == True ]]; then
     grep -F "$(state hop_start):$(state hop_end)/udp" <<<"$rules" | grep -q ALLOW || warn "$(L '未检测到跳跃 UDP 范围放行' 'Hopping UDP range allow rule not detected')"
    fi
@@ -608,6 +690,7 @@ LOGO
 19. Legal and privacy notice
 20. Initialize new server
 21. Change language
+22. HY2 / Shadowrocket connection checks
  0. Exit
 MENU
   else
@@ -633,6 +716,7 @@ MENU
 19. 法律隐私声明
 20. 新服务器初始化
 21. 切换语言
+22. HY2 / 小火箭连接诊断
  0. 退出
 MENU
   fi
@@ -649,7 +733,7 @@ MENU
    4) exports;; 5) subscription;; 6) firewall;; 7) firewall_audit;;
    8) service_manager;; 9) traffic;; 10) bbr;; 11) hop;; 12) update;; 13) configure_auto;;
    14) backup;; 15) restore;; 16) ipcheck;; 17) netcheck;; 18) journalctl -u sing-box -n 80 --no-pager;;
-   19) notice;; 20) initialize_server;; 21) select_language;; 0) exit 0;; *) err "$(L '无效选项' 'Invalid choice')";;
+   19) notice;; 20) initialize_server;; 21) select_language;; 22) hy2_diagnostics;; 0) exit 0;; *) err "$(L '无效选项' 'Invalid choice')";;
   esac
   )
   set -e
