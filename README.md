@@ -36,6 +36,7 @@ sudo bash install.sh
 | 14 / 15 | 配置、证书、二进制备份 / 确认后恢复 |
 | 16 / 17 / 18 | IP 信息 / 基础网络诊断 / 日志 |
 | 19 / 20 / 21 | 法律隐私声明 / 新服务器初始化 / 语言切换 |
+| 22 | HY2 / 小火箭连接诊断：配置、服务、实际 UDP 端口、证书和 UFW |
 
 初始化更新 apt 索引、升级软件、安装常用工具，检查时间同步、DNS、HTTPS、SSH 和 UFW。保留已有运行中的时间同步服务；不自动开启 UFW、改变 SSH 端口、设置 BBR 或重启。系统升级可能重启相关服务，应保留 VPS 控制台。
 
@@ -60,6 +61,7 @@ HY2 可以选择：
 | `mihomo-proxies.yaml` | Mihomo/OpenClash 配置片段，合并 `proxies` 及自签名所需的 `tls.custom-certifactes`（字段拼写为上游格式） |
 | `outbounds.json` | 包含 `outbounds` 的 sing-box JSON 配置片段；合并到已有客户端配置 |
 | `hy2-client-ca.pem` | 自签名部署的公开证书，供手动建立信任 |
+| `hy2-client-ca.cer` / `hy2-client-ca.mobileconfig` | DER 公开证书 / iOS 信任描述文件；描述文件仅为 CA 证书生成，需手动安装并启用信任 |
 | `subscription-notes.txt` | 信任说明、证书 SHA-256 指纹及跳跃提示 |
 
 协议从实际 `config.json` 自动识别。自签名 sing-box JSON 内嵌公开证书；Mihomo YAML 内嵌信任证书并提供指纹，`skip-cert-verify: false`。HY2 URI 包含 `insecure=0` 和自签名证书指纹，但不同客户端是否支持 URI 指纹、私有 CA 和跳跃字段存在差异。
@@ -69,6 +71,14 @@ Shadowrocket/v2rayN 使用自签名证书时：通过可信 SSH/SFTP 通道取�
 导出文件包含节点凭据，目录 700、文件 600，仅保存在 `/etc/singbox-v2/`，不部署公共 HTTP 订阅服务。不要上传公共仓库或粘贴进公开 issue。证书续期/替换后重启服务；自签名证书更换后重新导出并更新客户端信任。
 
 ## 端口跳跃、更新与恢复
+
+节点信息按协议逐个显示，并用虚线隔开；订阅文件仍保留原始 URI 格式。
+
+**“无域名”不等于“无证书”。** 默认链接保留 `insecure=0`；只导入链接并不能建立自签名证书信任。TLS 开启也不表示信任已建立。
+
+iPhone 可安装导出的 `hy2-client-ca.mobileconfig`，再进入 **设置 → 通用 → 关于本机 → 证书信任设置**，手动开启该证书的完全信任。只安装从自己 VPS 经可信 SSH/SFTP 通道取得、指纹一致的证书。描述文件增加系统根证书信任，停用后可删除；不包含节点密码或服务端私钥。已有证书不是 CA 时不会生成根证书描述文件，也不会替换已有服务端证书。系统信任能否被小火箭的 HY2 实现采用，需要用实际连接日志验证；不支持时使用受信任 CA 证书。参考 [Apple 手动信任证书说明](https://support.apple.com/en-us/102390)。
+
+菜单 **22** 检查配置、服务、实际 UDP 监听和证书，并提供只读抓包命令。本机 UDP 正常监听不能证明云防火墙或手机网络已放行 UDP。小火箭应测试实际连接或 URL，普通 ICMP 延迟不能验证 HY2。
 
 HY2 跳跃默认关闭，范围限制为 1024–65535、最多 10001 个端口，只操作 `ip singbox_v2_hop` 专属表。开启时检查现有表冲突，使用 systemd 持久化 IPv4 UDP 转发到 443，并放行已启用的 UFW。sing-box/Mihomo 导出包含跳跃范围与 30 秒间隔，普通 URI 保留基本端口；云防火墙仍需放行范围。关闭后不擅自删除可能被其他应用使用的 UFW 规则，必要时人工清理。
 

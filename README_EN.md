@@ -36,6 +36,7 @@ The manager downloads an official stable sing-box binary and verifies its SHA-25
 | 14 / 15 | Configuration, certificate and binary backup / confirmed restore |
 | 16 / 17 / 18 | IP information / basic network diagnostics / logs |
 | 19 / 20 / 21 | Legal/privacy notice / new-server initialization / language |
+| 22 | HY2/Shadowrocket diagnostics: config, service, actual UDP port, certificate and UFW |
 
 Initialization updates apt indexes, upgrades packages, installs administration tools and checks time synchronization, DNS, HTTPS, SSH and UFW. It preserves an active time-sync service and does not enable UFW, change SSH, configure BBR or reboot. Package upgrades may restart services; retain console access.
 
@@ -60,6 +61,7 @@ Menu 5 exports:
 | `mihomo-proxies.yaml` | Mihomo/OpenClash fragment; merge both `proxies` and the self-signed `tls.custom-certifactes` trust settings (upstream spelling) |
 | `outbounds.json` | sing-box JSON fragment containing `outbounds`, to merge into a client configuration |
 | `hy2-client-ca.pem` | Self-signed public certificate for manual trust setup |
+| `hy2-client-ca.cer` / `hy2-client-ca.mobileconfig` | DER public certificate / iOS trust profile; profiles are generated only for CA certificates and require manual installation/trust |
 | `subscription-notes.txt` | Trust instructions, SHA-256 fingerprint and hopping notes |
 
 Installed protocols are detected from the actual `config.json`. Self-signed sing-box exports embed the public certificate. Mihomo exports embed trusted certificates and a fingerprint, with `skip-cert-verify: false`. HY2 URIs include `insecure=0` and the self-signed fingerprint. URI pinning, custom CA trust and hopping support vary by client/core version.
@@ -69,6 +71,14 @@ For Shadowrocket/v2rayN, retrieve `hy2-client-ca.pem` over trusted SSH/SFTP. Run
 Exports contain credentials, remain local under `/etc/singbox-v2/` and use mode 600 inside a mode-700 directory. No public HTTP subscription server is created. Never publish exports in repositories or issues. Restart the service after certificate renewal/replacement; after replacing a self-signed certificate, re-export and update client trust.
 
 ## Hopping, updates and restore
+
+Node information is displayed per protocol with dashed separators; subscription URI formats are preserved.
+
+**No domain does not mean no certificate.** Default URIs retain `insecure=0`. Importing a URI does not establish self-signed certificate trust, and enabling TLS does not establish trust.
+
+On iPhone, install `hy2-client-ca.mobileconfig`, then enable full trust under **Settings > General > About > Certificate Trust Settings**. Install only a certificate securely obtained from your own VPS via SSH/SFTP after verifying its fingerprint. This profile adds system root trust; remove it when no longer needed. It contains no node password or private key. Root profiles are not generated for leaf-only certificates, and existing server certificates are preserved. System trust does not prove Shadowrocket HY2 uses that trust store; verify with connection logs. Use a trusted CA certificate if unsupported. See [Apple certificate trust instructions](https://support.apple.com/en-us/102390).
+
+Menu **22** checks config, service, actual UDP listener and certificate, and prints a read-only packet check command. A local listener does not prove provider/mobile-network UDP reachability. Use actual connections or URL tests in Shadowrocket; ICMP latency does not validate HY2.
 
 Hopping is off by default. Ranges must be within 1024–65535 and contain at most 10001 ports. The manager owns only the `ip singbox_v2_hop` table, checks for collisions, persists IPv4 UDP redirects to 443 through systemd and permits the range in active UFW. sing-box/Mihomo exports include the range and a 30-second interval; basic URIs retain the base port. Allow the range in your provider firewall. Disabling hopping leaves UFW rules for manual cleanup to avoid deleting rules used by other applications.
 

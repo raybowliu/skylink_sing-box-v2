@@ -50,7 +50,7 @@ class ManagerTest(unittest.TestCase):
         self.key = self.root / 'server.key'
         subprocess.run([OPENSSL, 'req', '-x509', '-newkey', 'rsa:2048', '-nodes',
                         '-days', '2', '-subj', '/CN=127.0.0.1', '-addext',
-                        'subjectAltName=IP:127.0.0.1,DNS:node.example',
+                        'subjectAltName=IP:127.0.0.1,DNS:node.example', '-addext', 'basicConstraints=critical,CA:TRUE',
                         '-keyout', str(self.key), '-out', str(self.cert)],
                        check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.password = secrets.token_urlsafe(24) + ':@ /?#'
@@ -169,6 +169,64 @@ class ManagerTest(unittest.TestCase):
         out=json.loads((self.base/'outbounds.json').read_text())['outbounds']
         self.assertEqual([i['server_port'] for i in out],[8443,8443])
         self.assertTrue(all(':8443?' in i for i in (self.base/'nodes.txt').read_text().splitlines()))
+
+    def test_each_node_is_separated_and_trust_notes_are_localized(self):
+        self.configure('3')
+        for lang, label in [('zh_CN','节点：'),('en_US','Node: ')]:
+            result=self.shell('LANGUAGE_CHOICE='+lang+'; exports')
+            lines=result.stdout.splitlines()
+            for index,line in enumerate(lines):
+                if line.startswith(('vless://','hysteria2://')):
+                    self.assertEqual(lines[index-3],'-'*64)
+            self.assertEqual(sum(i.startswith(label) for i in lines),2)
+            notes=(self.base/'subscription-notes.txt').read_text()
+            self.assertIn('无域名模式仍使用 TLS' if lang=='zh_CN' else 'No-domain mode still uses self-signed TLS',notes)
+
+    def test_ios_trust_profile_contains_only_public_certificate(self):
+        import plistlib
+        self.exported('2')
+        profile=plistlib.loads((self.base/'hy2-client-ca.mobileconfig').read_bytes())
+        self.assertEqual(profile['PayloadType'],'Configuration')
+        self.assertEqual(len(profile['PayloadContent']),1)
+        payload=profile['PayloadContent'][0]
+        self.assertEqual(payload['PayloadType'],'com.apple.security.root')
+        self.assertEqual(payload['PayloadContent'],ssl.PEM_cert_to_DER_cert(self.cert.read_text()))
+        self.assertNotIn(self.password.encode(),(self.base/'hy2-client-ca.mobileconfig').read_bytes())
+        self.assertNotIn(self.key.read_bytes(),(self.base/'hy2-client-ca.mobileconfig').read_bytes())
+        self.assertEqual((self.base/'hy2-client-ca.mobileconfig').stat().st_mode & 0o777,0o600)
+        self.assertEqual((self.base/'hy2-client-ca.cer').read_bytes(),payload['PayloadContent'])
+
+    def test_leaf_cert_does_not_get_root_profile_or_leave_stale_profile(self):
+        self.exported('2')
+        self.assertTrue((self.base/'hy2-client-ca.mobileconfig').exists())
+        subprocess.run([OPENSSL,'req','-x509','-key',str(self.key),'-days','2','-subj','/CN=127.0.0.1',
+                        '-addext','subjectAltName=IP:127.0.0.1','-addext','basicConstraints=critical,CA:FALSE',
+                        '-out',str(self.cert)],check=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        self.shell('exports')
+        self.assertFalse((self.base/'hy2-client-ca.mobileconfig').exists())
+        self.assertIn('not a CA',(self.base/'subscription-notes.txt').read_text())
+
+    def test_hy2_diagnostics_uses_actual_port_and_does_not_print_credentials(self):
+        config=self.configure('2');config['inbounds'][0]['listen_port']=8443
+        (self.config/'config.json').write_text(json.dumps(config))
+        result=self.shell("""systemctl(){ return 0; }
+ss(){ printf 'UNCONN 0 0 0.0.0.0:8443 0.0.0.0:*\\n'; }
+ufw(){ printf 'Status: active\\n8443/udp ALLOW Anywhere\\n'; }
+hy2_diagnostics""")
+        self.assertIn('Local UDP 8443 has a listener',result.stdout)
+        self.assertIn('Certificate expiry, name and key matching checks passed',result.stdout)
+        self.assertNotIn('allow rule not detected',result.stdout)
+        self.assertNotIn(self.password,result.stdout+result.stderr)
+        self.assertIn('do not prove phone-to-VPS UDP reachability',result.stdout)
+
+    def test_hy2_diagnostics_reports_stopped_service_and_missing_udp(self):
+        self.configure('2')
+        result=self.shell("""systemctl(){ return 1; }
+ss(){ :; }
+ufw(){ printf 'Status: inactive\\n'; }
+hy2_diagnostics""")
+        self.assertIn('sing-box is not active',result.stderr)
+        self.assertIn('No local UDP 443 listener',result.stderr)
 
     def test_certificate_names_and_key_matching(self):
         command = 'validate_certificate ' + ' '.join(map(shlex.quote, [str(self.cert), str(self.key)]))

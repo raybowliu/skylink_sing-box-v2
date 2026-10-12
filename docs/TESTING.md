@@ -40,7 +40,7 @@ The regression suite invokes actual Bash functions with isolated filesystem path
 - Real sing-box client → HY2 server → local HTTP forwarding; removing certificate trust fails.
 - Real Mihomo YAML validation and Mihomo client → sing-box HY2 server → local HTTP forwarding.
 
-Local development result: 26 tests passed, including real HY2 forwarding with both clients and rejection without certificate trust; `bash -n`, ShellCheck and `git diff --check` passed.
+Local development result: 31 tests passed, including real HY2 forwarding with both clients and rejection without certificate trust; `bash -n`, ShellCheck and `git diff --check` passed.
 
 Local development validation: macOS arm64, Bash 3.2, ShellCheck 0.11.0, OpenSSL 3.6.2, sing-box 1.14.3, Mihomo 1.19.32. CI pins the same protocol engine releases on Ubuntu 24.04 / Debian 12 with the distributions' Bash/OpenSSL/ShellCheck.
 
@@ -57,3 +57,11 @@ Without engine paths, engine-specific tests are skipped. PyYAML is required for 
 No production VPS was provided. The automated suite does not claim to test real apt upgrades, systemd boot persistence, kernel BBR behavior, UFW/nftables packet processing, provider firewalls or Shadowrocket/v2rayN GUI imports.
 
 On a disposable Ubuntu/Debian VPS, verify all three installation modes, real certificate chain validation, trusted self-signed client imports, IPv4 hopping through UFW and cloud security groups, weekly timer execution, restart/restore failure handling and reboots. Keep provider console access and a snapshot throughout. These checks should precede production rollout.
+
+## Shadowrocket follow-up
+
+Added per-protocol separators, translated trust notes, PEM/DER public certificate exports and iOS root profiles for CA certificates. Profiles contain no passwords or private keys. Leaf-only certificates do not get root profiles, and stale trust exports are removed. Existing server certificates and credentials are preserved.
+
+Menu 22 checks configuration, service, actual UDP listener, certificate identity/key/expiry and UFW. It prints timeout/auth/trust guidance without printing node passwords. Tests cover profile schema, public DER content, CA-versus-leaf behavior, translated separators, changed ports and stopped services.
+
+User evidence confirms an active sing-box service and a UDP 443 listener. This does not establish external UDP reachability or client TLS trust. Shadowrocket screenshots show TLS enabled but not its inner trust settings. The reported live-client failure is not yet confirmed resolved.
