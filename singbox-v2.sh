@@ -29,7 +29,7 @@ load_language() {
 select_language() {
   local choice
   while :; do
-    printf '\n========== Language / 语言 ==========\n 1. 简体中文\n 2. English\n=======================================\n'
+    printf '%s\n========== Language / 语言 ==========\n 1. 简体中文\n 2. English\n=======================================\n%s' "$GREEN" "$RESET"
     read -r -p '请选择语言 / Select language [1/2]: ' choice || return 1
     case "$choice" in 1) LANGUAGE_CHOICE=zh_CN;; 2) LANGUAGE_CHOICE=en_US;; *) continue;; esac
     printf '%s\n' "$LANGUAGE_CHOICE" > "$LANG_FILE"
