@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.3.1
+MANAGER_VERSION=2.3.2
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
 SYSTEMD_DIR=/etc/systemd/system
@@ -2175,6 +2175,7 @@ LOGO
   say ' 0. 退出' ' 0. Exit'
   printf '%s' "$RESET"
   printf '%sYouTube: %s%s\n' "$CYAN" "$YOUTUBE" "$RESET"
+  printf '%s%s%s\n' "$CYAN" "$(L '如果这个脚本对你有帮助，欢迎订阅我的 YouTube 频道，支持 SKYBYTE 持续更新！' "If you find this script helpful, please subscribe to my YouTube channel and support SKYBYTE's continued development!")" "$RESET"
   prompt_read "$(L '请选择：' 'Select: ')" group || return 0
   [[ $group != 0 ]] || return 0
   case $group in 7) MAIN_ACTION=users;; 1|2|3|4|5|6) sub_menu "$group" || return 0;; *) err "$(L '无效选项' 'Invalid choice')"; continue;; esac

@@ -380,7 +380,7 @@ printf '%s' "$SSH_PORTS"''')
         for language, text in [('en_US','Nodes and subscriptions'), ('zh_CN','节点与订阅')]:
             result = self.shell('need_root(){ :; }; flock(){ :; }; LANGUAGE_CHOICE='+language+'; main', input='0\n')
             self.assertIn('███████╗', result.stdout)
-            self.assertIn('SKYBYTE Manager v2.3.1', result.stdout)
+            self.assertIn('SKYBYTE Manager v2.3.2', result.stdout)
             self.assertIn('https://www.youtube.com/@SKYBYTE9119', result.stdout)
             self.assertIn(text, result.stdout)
 
