@@ -1,51 +1,98 @@
-# SKYBYTE sing-box Manager V2.1 — Bilingual manager (test candidate)
+# SKYBYTE Manager V2.1
 
-**Status:** The Bash syntax and basic language-switching menus have been locally tested. This has **not** passed an end-to-end live VPS deployment, protocol handshake, firewall, update or rollback test. Use a fresh test VPS with a snapshot, not a production server.
+A Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces.
 
-## Start
+YouTube: [SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [中文](README.md)
 
-Requirements: Debian/Ubuntu, root, systemd, network access. Hysteria2 requires your own domain plus a **valid trusted TLS certificate** and private key in PEM form. Open TCP 443 and UDP 443 in the hosting-provider firewall. For optional hopping, also allow your chosen UDP port range. Keep SSH access safe.
+The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential links bold red, warnings bold yellow and errors bold red on ANSI terminals. Set `NO_COLOR=1` to disable colors. Every YES confirmation is case-insensitive.
 
-Upload `singbox-v2.sh` and run:
+## Installation
+
+Requires root, Ubuntu/Debian, systemd and a public IPv4 address. Supports x86_64/arm64. The existing `install.sh` entry point remains available:
 
 ```bash
-chmod 700 singbox-v2.sh
-sudo bash ./singbox-v2.sh
+curl -fsSL https://raw.githubusercontent.com/skylink9119/sing-box-v2/main/install.sh -o install.sh
+sudo bash install.sh
 ```
 
-At first interactive launch, choose `1` for Simplified Chinese or `2` for English. The selection persists at `/etc/singbox-v2/language.conf`, and menu option `15` changes it. The unattended update job does not prompt for a language. Core menus, legal/privacy notices, important confirmations, and new-server initialization are translated. Some lower-level diagnostic messages and third-party tool output may still appear in Chinese or the system language.
+Until the development branch is merged, that command installs the main version. To test this branch, clone the repository, switch to the branch and run `sudo bash ./singbox-v2.sh`. Review downloaded scripts before execution.
 
-## Main functions
+The manager downloads an official stable sing-box binary and verifies its SHA-256 digest against GitHub Release metadata. It does not run a remote package installer. Choose a language at first launch; it is saved in `/etc/singbox-v2/language.conf`. Menu **21** changes language.
 
-- Install VLESS + Reality + Vision on TCP 443 and Hysteria2 on UDP 443 (fresh VPS only; existing deployments are protected from overwrite).
-- Show node URIs and export sing-box outbound JSON **fragments** (not full client configurations). Mihomo YAML and QR codes are not yet implemented.
-- Optional BBR + FQ, affecting host-wide TCP settings.
-- Optional IPv4 UDP port hopping (disabled by default). nftables rules are persisted by a dedicated systemd unit. Provider firewall rules must also be adjusted. Client port hopping must be configured explicitly.
-- Manual and opt-in weekly stable release updates with backups and attempted rollback. Package-manager side effects and endpoint availability cannot be fully rolled back or tested by this script.
-- Optional IP information query via ipinfo.io and simple network checks. These are **not** IP reputation, streaming-unlock, UDP-loss, throughput, or China-carrier-route tests.
-- Reports saved locally under `/etc/singbox-v2/reports` and pruned after 30 days. Backups are not automatically deleted.
-- Option `14` initializes a fresh server after explicit confirmation: updates apt packages, installs common administration tools, checks time synchronization, DNS, HTTPS, SSH and UFW. Does **not** enable UFW, change SSH ports, enable BBR, or reboot.
+**Installation refuses to overwrite an existing configuration, manager state, sing-box binary, service or occupied protocol port.** Management and updates preserve UUIDs, passwords and server configuration. New deployments use TCP 443 / UDP 443. Configure the provider firewall separately.
 
-## Privacy and legal disclosure
+## Menu and features
 
-The manager is for lawful networking education and server administration, subject to applicable laws and service terms. Provided as-is to the extent permitted by law; back up before making changes. It does not intentionally transmit node secrets or telemetry to the script author. Third-party services can see your source IP: installation/updates may access sing-box.app, github.com, api.github.com and GitHub CDNs; installation may use api.ipify.org; optional IP lookup uses ipinfo.io. Auto-updates are opt-in. HY2 does not disable TLS verification by default.
+| Menu | Function |
+| --- | --- |
+| 1 / 2 / 3 | VLESS + Reality + Vision / Hysteria2 / both |
+| 4 / 5 | Node links / local subscription export |
+| 6 / 7 | UFW installation, controls and rules / UDP rule audit |
+| 8 | Service status, start, stop, restart, boot enable and config check |
+| 9 | vnStat VPS interface daily/monthly traffic and live speed |
+| 10 | BBR + FQ, after checking kernel BBR support |
+| 11 | HY2 IPv4 UDP hopping with a dedicated nftables table and systemd service |
+| 12 / 13 | Manual update / optional weekly automatic update |
+| 14 / 15 | Configuration, certificate and binary backup / confirmed restore |
+| 16 / 17 / 18 | IP information / basic network diagnostics / logs |
+| 19 / 20 / 21 | Legal/privacy notice / new-server initialization / language |
 
-Review the source before executing. See the Chinese `README.md` for further warnings and official documentation links.
+Initialization updates apt indexes, upgrades packages, installs administration tools and checks time synchronization, DNS, HTTPS, SSH and UFW. It preserves an active time-sync service and does not enable UFW, change SSH, configure BBR or reboot. Package upgrades may restart services; retain console access.
 
-## New install modes (testing build)
-Menu 1 now offers Reality only, HY2 only, or dual protocol. HY2 accepts an existing TLS cert or can create a self-signed certificate with an IP SAN. The public certificate must be transferred securely and explicitly trusted by supported clients; a HY2 URI alone does not establish trust. Menus are bold green, and confirmation accepts YES regardless of case.
+Before enabling UFW, the manager detects SSH ports from sshd listeners, `sshd -T` and `SSH_CONNECTION`, then asks you to verify the port. Detected ports and the verified port are allowed, together with deployed protocol ports and active HY2 hopping ranges. Menu 7 audits UDP 443 and range rules. Complex UFW rules require manual inspection; provider security groups cannot be inspected by this script.
 
-**This is an unverified testing build. Bash syntax validation is not equivalent to a real VPS installation, client connectivity, upgrade, or rollback test. Do not deploy to production.**
+vnStat reports **total VPS interface traffic**, never separate Reality/HY2 traffic. History starts when vnStat begins collecting data.
 
-## SKYBYTE V2.1 additions
+## HY2 and verified TLS
 
-YouTube channel: https://www.youtube.com/@SKYBYTE9119
+Choose either:
 
-- Menu 1/2/3: install Reality, HY2, or both. Menu 4: node info. Menu 5: local subscription exports. Bold green menu, cyan headings, bold red credential links, yellow warnings where ANSI is supported. Case-insensitive `yes` confirmation.
-- Menu 6: UFW installation/enable/disable/rule management. Verify the real SSH port and ensure out-of-band VPS console access before enabling UFW. Provider firewall is separate.
-- Menu 8: service status and start/restart/stop/boot enable/config check. An active service does not establish end-to-end client availability.
-- Menu 9: optional vnStat installation and VPS interface traffic monitoring (daily, monthly, live). **Does not count Reality and HY2 separately.**
-- Local exports in `/etc/singbox-v2/` (chmod 600): `nodes.txt`, `subscription-base64.txt`, `mihomo-proxies.yaml` (proxy fragment), `outbounds.json` (outbound fragment), `subscription-notes.txt`. Never publish credentials. This does **not** create a remote HTTPS subscription URL.
-- Self-signed HY2 requires securely distributing and trusting the certificate on each client. Replace `REPLACE_WITH_TRUSTED_CLIENT_CERT_PATH` with a real trusted client-side certificate path. Client support varies.
+- **No-domain self-signed certificate:** generates a certificate with the public IPv4 SAN, valid for 365 days. Clients must trust its public certificate.
+- **Existing TLS certificate:** supply its domain, full certificate chain and private-key paths. Installation checks expiry, hostname/IP and key matching. The chain must also be trusted by clients. Supplied files are not modified.
 
-This remains an **untested VPS candidate**: only Bash syntax and static checks were performed. Test on a disposable VPS with a snapshot and console before public release.
+Server and client passwords match; URI credentials are percent-encoded. Certificate verification stays enabled. Self-signed certificates are not trusted by default, so importing only a URI is insufficient.
+
+Menu 5 exports:
+
+| File | Purpose |
+| --- | --- |
+| `nodes.txt` / `subscription-base64.txt` | Shadowrocket/v2rayN and other compatible clients; verify TLS trust after import |
+| `mihomo-proxies.yaml` | Mihomo/OpenClash fragment; merge both `proxies` and the self-signed `tls.custom-certifactes` trust settings (upstream spelling) |
+| `outbounds.json` | sing-box JSON fragment containing `outbounds`, to merge into a client configuration |
+| `hy2-client-ca.pem` | Self-signed public certificate for manual trust setup |
+| `subscription-notes.txt` | Trust instructions, SHA-256 fingerprint and hopping notes |
+
+Installed protocols are detected from the actual `config.json`. Self-signed sing-box exports embed the public certificate. Mihomo exports embed trusted certificates and a fingerprint, with `skip-cert-verify: false`. HY2 URIs include `insecure=0` and the self-signed fingerprint. URI pinning, custom CA trust and hopping support vary by client/core version.
+
+For Shadowrocket/v2rayN, retrieve `hy2-client-ca.pem` over trusted SSH/SFTP. Run `openssl x509 -in /etc/sing-box/hy2-selfsigned.crt -noout -fingerprint -sha256` on the server and verify the fingerprint through a trusted channel. Import the certificate using the trust mechanism supported by the client/core, keeping verification enabled. If the client cannot trust a custom CA, use an existing certificate issued by a trusted CA. **Never transfer or import the server private key.**
+
+Exports contain credentials, remain local under `/etc/singbox-v2/` and use mode 600 inside a mode-700 directory. No public HTTP subscription server is created. Never publish exports in repositories or issues. Restart the service after certificate renewal/replacement; after replacing a self-signed certificate, re-export and update client trust.
+
+## Hopping, updates and restore
+
+Hopping is off by default. Ranges must be within 1024–65535 and contain at most 10001 ports. The manager owns only the `ip singbox_v2_hop` table, checks for collisions, persists IPv4 UDP redirects to 443 through systemd and permits the range in active UFW. sing-box/Mihomo exports include the range and a 30-second interval; basic URIs retain the base port. Allow the range in your provider firewall. Disabling hopping leaves UFW rules for manual cleanup to avoid deleting rules used by other applications.
+
+Updates back up first, download and check a candidate binary, then replace the binary, restart and check service health. Startup failures restore the previous binary. Manual updates require confirmation; weekly updates are off by default and run on **Sunday at 04:00 in the server timezone**, with up to 15 minutes of randomized delay. Service health alone does not prove client connectivity.
+
+New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including snapshots of external TLS certificate/key files. Restore backs up the current deployment and attempts rollback on failure. It disables managed hopping and clears its state; re-enable hopping when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
+
+## Validation
+
+```bash
+bash -n install.sh singbox-v2.sh
+shellcheck install.sh singbox-v2.sh
+python3 -m unittest discover -s tests -v
+```
+
+Set `SING_BOX_BIN` and `MIHOMO_BIN` to include real engine validation: all three server modes, Mihomo YAML parsing, and local forwarding through HY2 with sing-box/Mihomo clients. Mihomo tests require PyYAML. Credentials and certificates are generated in temporary directories and are never committed.
+
+GitHub Actions runs checks in Ubuntu 24.04 and Debian 12 containers. See [audit and testing notes](docs/TESTING.md). Local handshakes do not replace live VPS tests of provider firewalls, UDP NAT, systemd startup or Shadowrocket/v2rayN GUI imports. Validate these on a disposable VPS with snapshots and console access.
+
+## Privacy, legal notice and references
+
+For lawful networking education and server administration, subject to applicable law and service terms. Installation, updates and optional diagnostics contact third parties such as GitHub, api.ipify.org and ipinfo.io, which can see the source IP. No developer telemetry or credential uploads. Local diagnostic reports are pruned after 30 days. Provided as-is; back up before deployment.
+
+- [sing-box HY2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)
+- [sing-box TLS](https://sing-box.sagernet.org/configuration/shared/tls/)
+- [Hysteria URI scheme](https://v2.hysteria.network/docs/developers/URI-Scheme/)
+- [Mihomo TLS](https://wiki.metacubex.one/en/config/proxies/tls/)

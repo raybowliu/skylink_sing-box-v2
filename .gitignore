@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+work/
+*.key
+*.pem
+*.crt
+state.json
+nodes.txt
+subscription-base64.txt
+subscription-notes.txt
+outbounds.json
+mihomo-proxies.yaml
+*.log
