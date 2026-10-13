@@ -79,6 +79,7 @@ class ManagerTest(unittest.TestCase):
                          REPORT=self.base / 'reports', SYSTEMD_DIR=self.root/'systemd',
                          OS_RELEASE=self.root/'os-release', MANAGER_BIN=self.root/'manager-command',
                          MANAGER_LIB=self.root/'manager-lib',
+                         WARP_REPO_FILE=self.root/'warp.list', WARP_KEY_FILE=self.root/'warp.gpg',
                          SYSCTL_FILE=self.root/'bbr.conf')
         script = 'source ' + quote(str(ROOT / 'singbox-v2.sh')) + '\n'
         script += '\n'.join(k + '=' + quote(str(v)) for k, v in variables.items()) + '\n'
@@ -380,7 +381,7 @@ printf '%s' "$SSH_PORTS"''')
         for language, text in [('en_US','Nodes and subscriptions'), ('zh_CN','节点与订阅')]:
             result = self.shell('need_root(){ :; }; flock(){ :; }; LANGUAGE_CHOICE='+language+'; main', input='0\n')
             self.assertIn('███████╗', result.stdout)
-            self.assertIn('SKYBYTE Manager v2.3.1', result.stdout)
+            self.assertIn('SKYBYTE Manager v2.4.0', result.stdout)
             self.assertIn('https://www.youtube.com/@SKYBYTE9119', result.stdout)
             self.assertIn(text, result.stdout)
 
@@ -417,9 +418,9 @@ printf '%s' "$SSH_PORTS"''')
 
     def test_uninstall_removes_owned_auxiliary_units_and_manager_copies(self):
         self.prepare_uninstall()
-        self.shell('need_root(){ :; }; systemctl(){ :; }; configure_auto',input='1\n')
+        self.prepare_legacy_timer()
         (self.root/'manager-lib').write_bytes((ROOT/'singbox-v2.sh').read_bytes())
-        (self.root/'systemd'/'singbox-v2-hop.service').write_text('Description=singbox V2 HY2 IPv4 port hopping\n')
+        (self.root/'systemd'/'singbox-v2-hop.service').write_text('Description=singbox V2 HY2 IPv4 port hopping\nExecStart=/usr/sbin/nft -f '+str(self.base/'hop.nft')+'\n')
         result=self.shell("""need_root(){ :; }
 systemctl(){ printf 'SYSTEMCTL %s\\n' "$*"; }
 nft(){ printf 'NFT %s\\n' "$*"; }
@@ -497,13 +498,17 @@ uninstall_manager""",input='yes\n')
         self.assertIn('refusing to overwrite', result.stderr)
         self.assertEqual((self.config/'config.json').read_bytes(), before)
 
-    def test_weekly_auto_update_installs_manager_command(self):
-        self.configure('1')
-        self.shell('need_root(){ :; }; systemctl(){ :; }; configure_auto', input='1\n')
-        self.assertEqual((self.root/'manager-command').read_bytes(), (ROOT/'singbox-v2.sh').read_bytes())
-        service = (self.root/'systemd'/'singbox-v2-update.service').read_text()
-        self.assertIn('--auto-update', service)
-        self.assertTrue((self.root/'systemd'/'singbox-v2-update.timer').exists())
+    def prepare_legacy_timer(self):
+        (self.root/'systemd'/'singbox-v2-update.service').write_text('Description=sing-box v2 weekly update\nExecStart=/bin/bash '+str(self.root/'manager-command')+' --auto-update\n')
+        (self.root/'systemd'/'singbox-v2-update.timer').write_text('Description=sing-box v2 weekly update timer\n')
+
+    def test_retire_owned_weekly_timer_keeps_private_backup(self):
+        self.configure('1');self.prepare_legacy_timer()
+        before=(self.config/'config.json').read_bytes()
+        self.shell('systemctl(){ :; }; retire_auto_update')
+        self.assertFalse((self.root/'systemd'/'singbox-v2-update.timer').exists())
+        self.assertTrue(list((self.base/'manager-backups').glob('legacy-auto.*/singbox-v2-update.service')))
+        self.assertEqual(before,(self.config/'config.json').read_bytes())
 
     def test_firewall_enable_keeps_ssh_and_hopping(self):
         self.configure('2')
@@ -523,7 +528,7 @@ firewall""", input='2\n\nyes\n')
 systemctl(){ :; }
 ufw(){ printf 'Status: inactive\\n'; }
 """
-        self.shell(mocks+'hop', input='1\n20000\n20100\nyes\n')
+        self.shell(mocks+'hop', input='1\n1\n20000\n20100\nyes\n')
         self.assertIn('udp dport 20000-20100 redirect to :443', (self.base/'hop.nft').read_text())
         self.assertIn('ExecStop=/usr/sbin/nft delete table ip singbox_v2_hop',
                       (self.root/'systemd'/'singbox-v2-hop.service').read_text())
@@ -1039,7 +1044,7 @@ time.sleep(60)
         self.assertIn('RULE allow '+str(u['port'])+'/tcp',rules)
         self.assertIn('RULE allow '+str(u['port'])+'/udp',rules)
         self.assertNotIn(str(u['api_port']),rules)
-        result=self.shell('nft(){ return 1; }; hop',input='1\n'+str(u['port'])+'\n'+str(u['port'])+'\nYES\n',ok=False)
+        result=self.shell('nft(){ return 1; }; hop',input='1\n1\n'+str(u['port'])+'\n'+str(u['port'])+'\nYES\n',ok=False)
         self.assertNotEqual(result.returncode,0);self.assertIn('overlaps',result.stderr)
         self.assertFalse((self.root/'systemd'/'singbox-v2-hop.service').exists())
 

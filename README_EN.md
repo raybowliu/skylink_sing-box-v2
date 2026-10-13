@@ -1,14 +1,16 @@
-# SKYBYTE Manager V2.3
+# SKYBYTE Manager V2.4
 
 A Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces.
 
 YouTube: [SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [中文](README.md)
 
+If you find this script helpful, please subscribe to my YouTube channel and support SKYBYTE's continued development!
+
 The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential links bold red, warnings bold yellow and errors bold red on ANSI terminals. Set `NO_COLOR=1` to disable colors. Every YES confirmation is case-insensitive.
 
 ## Installation
 
-Requires root, Ubuntu/Debian, systemd and a public IPv4 address. Supports x86_64/arm64. The existing `install.sh` entry point remains available:
+Requires root, Ubuntu/Debian, systemd and a reachable public IPv4 or IPv6 address. Supports x86_64/arm64. The existing `install.sh` entry point remains available:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/skylink9119/sing-box-v2/main/install.sh -o install.sh
@@ -25,11 +27,11 @@ The manager downloads an official stable sing-box binary and verifies its SHA-25
 
 | Menu | Category | Functions |
 | --- | --- | --- |
-| 1 | Protocol installation and Argo tunnels | Reality / HY2 / dual; Quick / Named |
+| 1 | Install nodes | Reality / HY2 / dual; Quick / Named |
 | 2 | Nodes and subscriptions | Information / exports / custom names / QR codes / account management |
 | 3 | Services and logs | Controls / logs / Argo status |
-| 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / diagnostics |
-| 5 | Updates and backups | Core updates / weekly core updates / backup / restore / manager updates / certificates |
+| 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / resources / media / WARP |
+| 5 | Updates and backups | Core updates / backup / restore / manager updates / certificates |
 | 6 | Settings and uninstall | Language / privacy / uninstall |
 | 7 | Users and quotas | Accounts / usage / quota / expiry / diagnostics / resources |
 | 0 | Exit | |
@@ -46,7 +48,7 @@ Installation accepts a node name prefix; press Enter for `SKYBYTE`. Existing dep
 
 Choose either:
 
-- **No-domain self-signed certificate:** generates a certificate with the public IPv4 SAN, valid for 365 days. Clients must trust its public certificate.
+- **No-domain self-signed certificate:** generates a certificate with the actual public IP SAN (IPv4 or IPv6), valid for 365 days. Clients must trust its public certificate.
 - **Existing TLS certificate:** supply its domain, full certificate chain and private-key paths. Installation checks expiry, hostname/IP and key matching. The chain must also be trusted by clients. Supplied files are not modified.
 
 Server and client passwords match; URI credentials are percent-encoded. Certificate verification stays enabled. Self-signed certificates are not trusted by default, so importing only a URI is insufficient.
@@ -80,11 +82,11 @@ Node information is grouped into v2rayN, Clash Verge/Mihomo YAML, sing-box JSON 
 
 On iPhone, install `hy2-client-ca.mobileconfig`, then enable full trust under **Settings > General > About > Certificate Trust Settings**. Install only a certificate securely obtained from your own VPS via SSH/SFTP after verifying its fingerprint. This profile adds system root trust; remove it when no longer needed. It contains no node password or private key. Root profiles are not generated for leaf-only certificates, and existing server certificates are preserved. System trust does not prove Shadowrocket HY2 uses that trust store; verify with connection logs. Use a trusted CA certificate if unsupported. See [Apple certificate trust instructions](https://support.apple.com/en-us/102390).
 
-Menu **4 → 9** checks config, service, actual UDP listener and certificate, and prints a read-only packet check command. A local listener does not prove provider/mobile-network UDP reachability. Use actual connections or URL tests in Shadowrocket; ICMP latency does not validate HY2.
+The former IP information, basic network and HY2/Shadowrocket diagnostic menu entries have been removed. A local listener does not prove provider/mobile-network UDP reachability. Use actual connections or URL tests in Shadowrocket; ICMP latency does not validate HY2.
 
-Hopping is off by default. Ranges must be within 1024–65535 and contain at most 10001 ports. The manager owns only the `ip singbox_v2_hop` table, checks for collisions, persists IPv4 UDP redirects to 443 through systemd and permits the range in active UFW. sing-box/Mihomo exports include the range and a 30-second interval; basic URIs retain the base port. Allow the range in your provider firewall. Disabling hopping leaves UFW rules for manual cleanup to avoid deleting rules used by other applications.
+Hopping is off by default, under **4 → 5**, with nftables (default) or iptables. The default range is `20000–40000`; ranges within 1024–65535 may contain at most 20001 ports. IPv4 UDP maps to the actual HY2 listener. Only the dedicated `ip singbox_v2_hop` table or `SKYBYTE_HY2_HOP` NAT chain is used. Existing named rules and account HY2 port overlaps are rejected. systemd persists rules and active UFW permits the range. sing-box/Mihomo exports include the range and a 30-second interval; basic URIs retain the base port. Allow the range in your provider firewall. Disabling hopping leaves UFW rules for manual cleanup to avoid deleting rules used by other applications. Hopping does not guarantee relief from throttling or UDP blocking; providers must allow the range.
 
-Updates back up first, download and check a candidate binary, then replace the binary, restart and check service health. Startup failures restore the previous binary. Manual updates require confirmation; weekly updates are off by default and run on **Sunday at 04:00 in the server timezone**, with up to 15 minutes of randomized delay. Service health alone does not prove client connectivity.
+Updates back up first, download and check a candidate binary, then replace the binary, restart and check service health. Startup failures restore the previous binary. Manual updates require confirmation. Weekly automatic updates have been removed. Startup backs up and retires owned legacy update units, preserving modified or unowned units. Service health alone does not prove client connectivity.
 
 New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including snapshots of external TLS certificate/key files. Restore backs up the current deployment and attempts rollback on failure. It disables managed hopping and clears its state; re-enable hopping when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
 
@@ -92,7 +94,7 @@ New backups use separate `config/`, `state.json` and `sing-box.bin` paths, inclu
 
 Menu **6 → 3** requires case-insensitive `YES` confirmation and first backs up configuration, certificates and the binary. Backup failure cancels removal. It stops automatic updates, managed hopping and sing-box, then removes owned units, the binary, node configuration, generated certificates/exports and identifiable manager executable copies. Changed unit ownership/start paths or symlinked key files cause refusal. Successful uninstall exits the menu.
 
-Backups, external certificates, unknown user files, reports, UFW allow rules, BBR/FQ settings and system packages such as vnStat remain. It does not reset the firewall or delete unrelated nftables tables. Backups contain private keys; protect permissions and disk space. To restore after uninstall, deploy again and restore the retained backup through menu 5 → 4.
+Backups, external certificates, unknown user files, reports, UFW allow rules, BBR/FQ settings and system packages such as vnStat remain. It does not reset the firewall or delete unrelated nftables tables. Backups contain private keys; protect permissions and disk space. To restore after uninstall, deploy again and restore the retained backup through menu 5 → 3.
 
 ```bash
 for file in install.sh singbox-v2.sh src/*.sh; do bash -n "$file"; done
@@ -106,7 +108,7 @@ GitHub Actions runs checks in Ubuntu 24.04 and Debian 12 containers. See [audit 
 
 ## Privacy, legal notice and references
 
-For lawful networking education and server administration, subject to applicable law and service terms. Installation, updates and optional diagnostics contact third parties such as GitHub, api.ipify.org and ipinfo.io, which can see the source IP. No developer telemetry or credential uploads. Local diagnostic reports are pruned after 30 days. Provided as-is; back up before deployment.
+For lawful networking education and server administration, subject to applicable law and service terms. Installation/updates contact GitHub and api.ipify.org/api64.ipify.org; media tests contact the selected platforms, and WARP installation/verification/DNS contact Cloudflare. These services see the egress IP and request metadata. WARP forwards selected user traffic through Cloudflare. No developer telemetry or credential uploads. Reports remain local; manage retention yourself. Provided as-is; back up before deployment.
 
 - [sing-box HY2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)
 - [sing-box TLS](https://sing-box.sagernet.org/configuration/shared/tls/)
@@ -125,7 +127,7 @@ Menu **2 → 4** displays one Shadowrocket node QR code per installed/exportable
 
 Shadowrocket native links are additionally saved in `shadowrocket-native-nodes.txt`, with a Base64 list in `shadowrocket-native-subscription.txt`. VLESS uses Base64 authority plus native remarks/peer/xtls parameters, following the [Xboard Shadowrocket exporter](https://github.com/cedar2025/Xboard/blob/master/app/Protocols/Shadowrocket.php). Menu 2 → 4 encodes these links. Standard files remain unchanged; HY2 keeps its existing verified-TLS URI. Native links have not been GUI-tested in Shadowrocket.
 
-Interactive startup and language changes show a bold green version/system summary: OS, kernel, architecture, virtualization, local IPv4/IPv6 interface addresses and service installation/running state. No startup geolocation request is made; use the IP information menu for public egress/location. Missing optional probes do not prevent opening the menu.
+Interactive startup and language changes show a bold green version/system summary: OS, kernel, architecture, virtualization, local IPv4/IPv6 interface addresses and service installation/running state. No startup geolocation request is made; the IP information entry has been removed. Missing optional probes do not prevent opening the menu.
 
 ## Account limits, traffic quotas and expiry
 
@@ -147,17 +149,44 @@ Backups include policies, usage, configurations and certificates. Restore retain
 
 ## Manager operations (V2.3)
 
-- **5 → 1** updates the sing-box core; **5 → 5** checks/updates SKYBYTE Manager itself. Manager updates use the latest stable GitHub Release asset, verify its SHA256, Bash/embedded Python syntax and version, and atomically replace owned script copies. Configurations, credentials and usage are retained. Script backups live in `/etc/singbox-v2/manager-backups/`. Previously active user supervisors and Argo tunnels briefly restart; failure rolls script copies back. Successful updates reopen the new menu. Development versions are not downgraded.
+- **5 → 1** updates the sing-box core; **5 → 4** checks/updates SKYBYTE Manager itself. Manager updates use the latest stable GitHub Release asset, verify its SHA256, Bash/embedded Python syntax and version, and atomically replace owned script copies. Configurations, credentials and usage are retained. Script backups live in `/etc/singbox-v2/manager-backups/`. Previously active user supervisors and Argo tunnels briefly restart; failure rolls script copies back. Successful updates reopen the new menu. Development versions are not downgraded.
 - **Main menu 7** opens user management; the main menu shows account count/limit, ready accounts and supervisor status. **User menu 4** changes quota only, retaining expiry and usage. **13** changes validity from now only, retaining quota and usage. Resulting expiry is displayed in UTC.
 - **User menu 14** reports safe failure categories, timestamps, exit codes, configuration checks and local log paths, without API secrets or raw logs. Authentication, timeout, invalid response, counter or core-exit failures stop the affected account. Repair the cause and explicitly enable it; enabling validates the core/controller configuration and does not bypass expiry or quota exhaustion.
-- **4 → 10** or **user menu 15** shows managed core/process counts, RSS memory, available system memory and load. RSS includes shared memory; this snapshot cannot guarantee account capacity.
-- Startup shows HY2 certificate days remaining and warns within 30 days. **5 → 6** checks expiry, synchronizes renewed certificates to user nodes and reloads previously active services, or enables/disables daily monitoring. Expired certificates and mismatched keys/identities are rejected.
+- **4 → 7** or **user menu 15** shows managed core/process counts, RSS memory, available system memory and load. RSS includes shared memory; this snapshot cannot guarantee account capacity.
+- Startup shows HY2 certificate days remaining and warns within 30 days. **5 → 5** checks expiry, synchronizes renewed certificates to user nodes and reloads previously active services, or enables/disables daily monitoring. Expired certificates and mismatched keys/identities are rejected.
 - Daily monitoring is **off by default**, uses `skybyte-certificate.timer` and logs to systemd. It does not issue or renew certificates. A valid changed domain certificate at the configured paths is synchronized/reloaded. Renewal tools can call `/bin/bash /usr/local/sbin/singbox-v2 --certificate-reload` as a deploy hook. The first check establishes a fingerprint baseline; manually reload once if renewal happened before that baseline. Changed self-signed certificates require manual reload and updated client trust; TLS verification remains enabled.
 
 ## Source modules and build
 
-Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), and `menu.sh` (menu/entry point). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
+Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), and `warp.sh`/`warp.py` (gateway/routing). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
 
 The original `install.sh` entry remains sufficient: deployed scripts contain all modules and require no runtime module downloads. `bash singbox-v2.sh --self-check` checks embedded Python syntax and outputs the version without root. systemd/UFW operations are tested through isolated mocks; actual VPS deployment still needs verification.
 
 V2.3.1: interactive questions, selection hints and YES confirmations use bold green, reset before typed input. Hidden Token input remains hidden. Non-terminal and `NO_COLOR` output stays plain. Shadowrocket native links and QR codes remain available.
+
+
+## WARP egress and dual-stack (V2.4)
+
+Open **4 → 9**. WARP is disabled by default. Initial setup routes only media/AI domains through WARP, leaving other traffic direct. Select **direct / global WARP / restricted domains**, or supply custom suffixes. Defaults include the five media platforms plus major OpenAI/ChatGPT and Claude domains and some CDNs. Remove AI suffixes in a custom list for media-only routing. Matching depends on domains and sniffing; literal IPs, ECH and unlisted CDNs may evade classification. WARP cannot guarantee platform unlocking or a chosen exit country.
+
+Three gateway sources are supported:
+
+- **Official WARP client**: signed Cloudflare apt repository, explicit terms confirmation, registration and local SOCKS5 proxy mode. Existing installations are preserved; use the existing-proxy option instead. Supported releases follow the [official repository](https://pkg.cloudflareclient.com/).
+- **Existing local proxy**: requires a loopback-only SOCKS5 listener and actual Cloudflare trace verification of `warp=on/plus` before applying routes.
+- **Existing WARP WireGuard profile**: import your own legitimately obtained dual-stack profile into one shared userspace sing-box gateway with TCP/UDP. No embedded profile scripts run and no WARP account is created automatically. Unsupported directives are rejected. Private keys stay in private server gateway configuration and never enter client exports.
+
+Admin, Argo and quota-managed accounts share one local gateway; credentials and metering remain independent. Mode changes back up and validate all candidate configurations before restarting previously active nodes, with routing rollback on failure. Unmanaged custom routing is rejected. New users/Argo nodes inherit the current policy. System default routes are untouched. Selected WARP traffic fails when the gateway fails; it does not silently fall back to direct.
+
+SOCKS5 UDP capability is probed. Unsupported matching UDP is rejected; application TCP fallback depends on the application. In global mode this affects all inner proxy UDP, while outer HY2 client-to-VPS UDP is unaffected. Native WireGuard TCP/UDP forwarding has local automated coverage. Dual-stack tests verify IPv4/IPv6 targets and actual trace address families separately. They test node TCP egress, not system-wide dual-stack. A gateway can provide an additional address family for node traffic.
+
+IPv6 exports use bracketed URI authorities and valid IP SANs. IPv6-only bootstrap still requires access to GitHub, package repositories and registration endpoints, potentially through provider NAT64 or pre-existing egress. WARP cannot supply connectivity before its first download. Real Cloudflare egress requires deployment verification.
+
+Backups include routing, private gateway configuration and owned units. Restore retains current account quotas, expiry and usage while reconciling routing. Uninstall stops/removes the managed gateway and preserves external source profiles. The official client is disconnected only when its registration fingerprint still matches; its package, repository and registration remain. Backups contain private keys; keep them private.
+
+## Streaming availability tests (V2.4)
+
+Open **4 → 8** for Netflix, Disney+, YouTube Premium, Amazon Prime Video and TikTok. Choose direct IPv4, direct IPv6, WARP or an IPv4/WARP comparison. Anonymous official-page requests use verified TLS, bounded timeouts/body sizes, no account login or cookies, and no remote third-party scripts.
+
+Results distinguish region hints, explicit location restrictions, catalog/subscription metadata and connection failure. HTTP 200 does not establish full catalog or playback access. Denials, rate limits, challenges and changed pages remain unknown rather than being mislabeled as blocked. Login, payment eligibility, actual playback and AI-account availability are not tested. Proxy tests use remote DNS and do not claim a particular egress address family.
+
+Private reports contain classifications, region hints and HTTP codes, at `/etc/singbox-v2/reports/media-*.json`, mode 600. Raw pages and node credentials are excluded. Probes run on demand without background jobs. WARP and each user core add resource usage; **4 → 7** shows process/memory/load snapshots, without a fixed account-capacity promise.

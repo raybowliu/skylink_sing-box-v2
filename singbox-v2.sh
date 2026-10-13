@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.3.1
+MANAGER_VERSION=2.4.0
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
 SYSTEMD_DIR=/etc/systemd/system
@@ -18,6 +18,8 @@ REPORT=$BASE/reports
 BACKUP=$BASE/backups
 BIN=/usr/local/bin/sing-box
 LOCK=/run/singbox-v2.lock
+WARP_REPO_FILE=/etc/apt/sources.list.d/skybyte-cloudflare-warp.list
+WARP_KEY_FILE=/usr/share/keyrings/skybyte-cloudflare-warp.gpg
 
 # Language preference is independent of sing-box configuration.
 LANG_FILE="$BASE/language.conf"
@@ -85,7 +87,7 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：管理脚本更新、用户诊断、证书监控与资源统计' 'Features: manager updates, user diagnostics, certificate monitoring and resources'
+ say '功能更新：流媒体检测、WARP 分流与双栈检测、可选 iptables 端口跳跃' 'Features: streaming probes, WARP routing/dual-stack tests, optional iptables hopping'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
@@ -101,12 +103,12 @@ startup_info(){
 
 notice(){ if [[ "$LANGUAGE_CHOICE" == en_US ]]; then cat <<'EOF_EN'
 [LEGAL & PRIVACY NOTICE] Use only for lawful networking education and server administration. You must comply with applicable law and service terms. Updating software or changing firewall/network settings may interrupt service or cause data loss; make backups first. Provided as-is to the extent permitted by law. Third-party components retain their licenses.
-Installation and updates can contact github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org for your public IPv4. The optional IP report queries ipinfo.io, which may retain your IP and request metadata; reports are stored locally in /etc/singbox-v2/reports and deleted after 30 days. No developer telemetry and no intentional upload of node credentials. Auto-update is opt-in. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
+Installation and updates can contact github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org/api64.ipify.org for your public address. Optional streaming probes contact the selected platforms; WARP installation/tests contact Cloudflare. Those services can see the egress IP and request metadata. Reports stay local in /etc/singbox-v2/reports; manage retention yourself. WARP sends selected traffic through Cloudflare. No developer telemetry or intentional upload of node credentials. Weekly automatic updates have been removed. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
 Optional Argo connects to Cloudflare, which terminates outer TLS and can inspect WebSocket payloads. Tunnel tokens are stored locally and included in private backups.
 EOF_EN
 else cat <<'EOF'
 【法律与隐私披露】此工具仅供合法网络技术学习和服务器管理；使用者应遵守适用法律和服务条款。更改防火墙、网络参数及更新软件可能导致中断或损失，请提前备份。软件按现状提供，不排除依法不得排除的责任。第三方软件遵循其许可证。
-安装/更新可能连接：github.com、api.github.com、GitHub 发布文件 CDN，访问服务会暴露请求来源 IP。安装时 api.ipify.org 用于识别出口 IP。可选 IP 检测使用 ipinfo.io，报告保存在本地 /etc/singbox-v2/reports，默认保留 30 天；第三方可能记录来源 IP、查询目标和请求时间。无开发者遥测或上传节点密钥；请勿公开包含凭据的配置和导出文件。自动更新默认关闭。HY2 必须有 TLS 证书，无域名用户可生成自签名证书，客户端必须正确配置信任，不能默认跳过证书验证。
+安装/更新可能连接：github.com、api.github.com、GitHub 发布文件 CDN，访问服务会暴露请求来源 IP。安装时 api.ipify.org/api64.ipify.org 用于识别公网地址；可选流媒体检测访问对应平台，WARP 安装/检测访问 Cloudflare。第三方可能记录出口 IP、查询目标和请求时间。报告保存在本地 /etc/singbox-v2/reports，请自行清理。WARP 将选定流量交由 Cloudflare 转发。无开发者遥测或上传节点密钥；请勿公开包含凭据的配置和导出文件。每周自动更新已移除。HY2 必须有 TLS 证书，无域名用户可生成自签名证书，客户端必须正确配置信任，不能默认跳过证书验证。
 可选 Argo 连接 Cloudflare，外层 TLS 在其边缘终止，可检查 WebSocket 载荷。隧道 Token 保存在本地并包含在私密备份中。
 EOF
 fi
@@ -133,15 +135,19 @@ check_owned(){ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本�
 backup(){
  check_owned || return 1
  local path file
- users_guard || return 1
+ users_guard && warp_guard || return 1
  path="$BACKUP/$(date +%Y%m%d-%H%M%S)-$RANDOM"
  mkdir -m 700 "$path" || return 1; cp -a "$(dirname "$CONF")" "$path/config" || return 1
  cp "$META" "$path/state.json" || return 1
  cp "$BIN" "$path/sing-box.bin" || return 1
  if [[ -f "$BASE/hop.nft" ]]; then cp "$BASE/hop.nft" "$path/hop.nft" || return 1; fi
- for file in argo-state.json argo-server.json argo-empty.yml argo.token; do
+ for file in argo-state.json argo-server.json argo-empty.yml argo.token warp-state.json warp-gateway.json warp-client.json hop-iptables.sh; do
   if [[ -f $BASE/$file ]]; then cp "$BASE/$file" "$path/$file" || return 1; fi
  done
+ if [[ -f $SYSTEMD_DIR/skybyte-warp-gateway.service ]]; then
+  cp "$SYSTEMD_DIR/skybyte-warp-gateway.service" "$path/warp-gateway.unit" || return 1
+  if systemctl is-active --quiet skybyte-warp-gateway.service; then echo true > "$path/warp-gateway-active"; else echo false > "$path/warp-gateway-active"; fi
+ fi
  if [[ -f $BASE/argo-state.json && -f $BASE/cloudflared ]]; then cp "$BASE/cloudflared" "$path/cloudflared.bin" || return 1; fi
  python3 - "$path" "$CONF" <<'PY' || return 1
 import json,sys,shutil,pathlib
@@ -162,7 +168,12 @@ PY
 validate_certificate(){
  local cert=$1 key=$2 name=$3 certpub keypub
  LC_ALL=C openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || { err "$(L '证书无效或已过期' 'Certificate invalid or expired')"; return 1; }
- if [[ $name =~ ^[0-9.]+$ ]]; then
+ if python3 - "$name" <<'PY_NAME_IP'
+import ipaddress,sys
+try:ipaddress.ip_address(sys.argv[1])
+except ValueError:sys.exit(1)
+PY_NAME_IP
+ then
   LC_ALL=C openssl x509 -in "$cert" -noout -checkip "$name" | grep -q "does match" || { err "$(L '证书 IP 不匹配' 'Certificate IP does not match')"; return 1; }
  else
   LC_ALL=C openssl x509 -in "$cert" -noout -checkhost "$name" | grep -q "does match" || { err "$(L '证书域名不匹配' 'Certificate hostname does not match')"; return 1; }
@@ -248,7 +259,8 @@ write_config(){
 import json,sys
 conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
 node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
-d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
+listen='::' if ':' in ip else '0.0.0.0'
+d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':listen,'listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
 elif mode=='2': d['inbounds']=d['inbounds'][1:]
 with open(conf,'w') as f:json.dump(d,f,indent=2)
@@ -293,7 +305,7 @@ install_protocol(){
   [[ $sni =~ ^[a-zA-Z0-9.-]+$ ]] || { err "$(L '无效 SNI' 'Invalid SNI')"; return 1; }
  fi
  say '安装依赖...' 'Installing dependencies...'; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables procps || return 1
- require_cmd getent; getent ahostsv4 github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS' 'GitHub DNS lookup failed; fix DNS first')"; return 1; }
+ require_cmd getent; getent ahosts github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS' 'GitHub DNS lookup failed; fix DNS first')"; return 1; }
  mkdir -p "$(dirname "$BIN")"
  if [[ $cert_mode == 2 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
  download_binary "$(latest)" "$BIN" || { err "$(L '官方安装失败' 'Release installation failed')"; return 1; }
@@ -304,7 +316,7 @@ install_protocol(){
  priv=$(sed -n 's/^PrivateKey: *//p' <<<"$pair"); pub=$(sed -n 's/^PublicKey: *//p' <<<"$pair")
  [[ -n $priv && -n $pub ]] || { err "$(L 'Reality 密钥生成失败' 'Reality key generation failed')"; return 1; }; fi
  sid=$(openssl rand -hex 4); passwd=$(openssl rand -hex 16)
- ip=$(curl -4fsS --max-time 15 https://api.ipify.org) || { err "$(L '公网 IPv4 查询失败' 'Public IPv4 lookup failed')"; return 1; }
+ ip=$(curl -q -4fsS --noproxy '*' --max-time 12 https://api.ipify.org) || ip=$(curl -q -6fsS --noproxy '*' --max-time 12 https://api64.ipify.org) || { err "$(L '公网 IP 查询失败' 'Public IP lookup failed')"; return 1; }
  python3 - "$ip" <<'PY' || return 1
 import ipaddress,sys
 assert ipaddress.ip_address(sys.argv[1]).is_global
@@ -358,8 +370,9 @@ if mode!='1' and self_signed:
  import hashlib,ssl
  cert_pem=open(s['cert_path']).read()
  fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
-v='vless://{}@{}:{}?{}#{}'.format(s.get('uuid',''),ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}),urllib.parse.quote(reality_name,safe=''))
-h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))),urllib.parse.quote(hy2_name,safe=''))
+authority_ip='['+ip+']' if ':' in ip else ip
+v='vless://{}@{}:{}?{}#{}'.format(s.get('uuid',''),authority_ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}),urllib.parse.quote(reality_name,safe=''))
+h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),authority_ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))),urllib.parse.quote(hy2_name,safe=''))
 links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
 link_names=[reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
 argo=None;argo_note=None;argo_name=node_name+'-Argo'
@@ -495,7 +508,7 @@ if mode!='1' and self_signed:
  else:
   notes.append(tr('当前证书不是 CA 证书，不能生成 iOS 根证书描述文件；使用客户端支持的自定义信任或受信任 CA 证书。','This certificate is not a CA; no iOS root profile is generated. Use supported client custom trust or a trusted CA certificate.'))
  notes += [tr('保留 TLS 验证；不要仅为连接而打开跳过验证。不要传输服务端私钥。','Keep TLS verification enabled. Do not enable skip verification just to connect. Never transfer the server private key.'),
-           tr('仍失败时运行服务器与网络 → HY2 诊断（4 → 9）；服务运行、证书信任与 UDP 可达需要分别检查。','If connection fails, run Server and network > HY2 checks (4 > 9); service health, certificate trust and UDP reachability are separate checks.')]
+           tr('仍失败时检查服务状态、证书信任、本机 UDP 监听和云防火墙；这些需要分别确认。','If connection fails, inspect service health, certificate trust, the UDP listener and provider firewall separately.')]
 if s.get('hop'):notes.append(tr('端口跳跃需客户端支持，并放行本机和云防火墙 UDP 范围；普通 URI 不包含跳跃范围。','Hopping requires client support and local/provider UDP range rules; basic URIs do not include the range.'))
 write('subscription-notes.txt','\n'.join(notes or [tr('导入前核实客户端协议支持。','Check client protocol support before importing.')])+'\n')
 color=sys.stdout.isatty() and not os.getenv('NO_COLOR')
@@ -535,23 +548,60 @@ PY
 bbr(){ need_root; confirm "$(L '更改系统 TCP 拥塞控制为 BBR、默认队列为 FQ？' 'Change system TCP congestion control to BBR and default qdisc to FQ?')" || return 0; modprobe tcp_bbr 2>/dev/null || :; if ! sysctl -n net.ipv4.tcp_available_congestion_control | grep -qw bbr; then err "$(L '内核不支持 BBR' 'Kernel does not support BBR')"; return 1; fi
  printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' >"$SYSCTL_FILE"
  sysctl -p "$SYSCTL_FILE"; sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc; }
-hop_disable(){ nft delete table ip singbox_v2_hop 2>/dev/null || :; if [[ -f $META ]]; then python3 - "$META" <<'PY'
+
+hop_guard(){
+ local unit=$SYSTEMD_DIR/singbox-v2-hop.service file
+ for file in hop.nft hop-iptables.sh; do [[ ! -L $BASE/$file ]] || return 1; done
+ if [[ -e $unit || -L $unit ]]; then
+  if [[ -L $unit ]] || ! grep -Fxq 'Description=singbox V2 HY2 IPv4 port hopping' "$unit"; then err "$(L '端口跳跃服务归属异常' 'Hopping service ownership mismatch')"; return 1; fi
+  if grep -Fxq "ExecStart=/usr/sbin/nft -f $BASE/hop.nft" "$unit"; then :
+  elif grep -Fxq "ExecStart=/bin/bash $BASE/hop-iptables.sh start" "$unit" && grep -Fxq "ExecStop=/bin/bash $BASE/hop-iptables.sh stop" "$unit" && [[ -f $BASE/hop-iptables.sh ]] && grep -Fxq '# SKYBYTE managed HY2 hopping' "$BASE/hop-iptables.sh"; then :
+  else err "$(L '端口跳跃启动路径异常，拒绝操作' 'Hopping executable mismatch; refusing operation')"; return 1; fi
+ fi
+}
+hop_disable(){
+ hop_guard || return 1
+ local unit=$SYSTEMD_DIR/singbox-v2-hop.service
+ if [[ -f $unit ]]; then
+  systemctl disable --now singbox-v2-hop.service || return 1
+  if grep -Fxq "ExecStart=/usr/sbin/nft -f $BASE/hop.nft" "$unit"; then nft delete table ip singbox_v2_hop 2>/dev/null || :; fi
+ fi
+ if [[ -f $META ]]; then python3 - "$META" <<'PY_HOP_OFF'
 import json,sys
 p=sys.argv[1];d=json.load(open(p));d['hop']=False
 with open(p,'w') as f:json.dump(d,f,indent=2)
-PY
- fi; say '已关闭本工具管理的端口跳跃规则' 'Disabled managed port-hopping rules'; }
-
-hop(){ check_owned || return; [[ "$(protocol_mode)" != 1 ]] || { err "$(L '未安装 HY2' 'HY2 not installed')"; return 1; }; require_cmd nft || return 1; say '端口跳跃仅支持 IPv4，规则通过专属 systemd 服务持久化。请同步修改云防火墙。' 'Port hopping is IPv4 only and uses a dedicated systemd service. Also configure your provider firewall.'; prompt_options '1 开启  2 关闭' '1 Enable  2 Disable'; prompt_read '> ' choice
- if [[ $choice == 2 ]]; then confirm "$(L '关闭端口跳跃？' 'Disable HY2 port hopping?')" && { systemctl disable --now singbox-v2-hop.service 2>/dev/null || :; hop_disable; }; return; fi
+PY_HOP_OFF
+ fi
+ say '已关闭托管的端口跳跃；UFW/云防火墙规则请按需要清理。' 'Managed hopping disabled; clean up UFW/provider rules as needed.'
+}
+hop(){
+ check_owned && hop_guard || return 1
+ [[ $(protocol_mode) != 1 ]] || { err "$(L '未安装 HY2' 'HY2 not installed')"; return 1; }
+ local choice backend start end target
+ say '端口跳跃仅支持 IPv4；规则随 systemd 开机恢复，需要放行云防火墙 UDP 范围。' 'Hopping is IPv4-only, persisted with systemd; allow the provider UDP range.'
+ prompt_options '1 开启  2 关闭  0 返回' '1 Enable  2 Disable  0 Back'
+ prompt_read '> ' choice || return 0
+ if [[ $choice == 2 ]]; then confirm "$(L '关闭跳跃？' 'Disable hopping?')" && hop_disable; return; fi
  [[ $choice == 1 ]] || return 0
- prompt_read "$(L '起始端口 [20000]: ' 'Start port [20000]: ')" start; start=${start:-20000}; prompt_read "$(L '结束端口 [30000]: ' 'End port [30000]: ')" end; end=${end:-30000}
- if ! valid_port "$start" || ! valid_port "$end" || ! (( 10#$start<=10#$end && 10#$start>=1024 && 10#$end-10#$start<=10000 )); then err "$(L '端口范围非法（最多10001个）' 'Invalid range (maximum 10001 ports)')"; return 1; fi
- start=$((10#$start)); end=$((10#$end))
+ prompt_options '1 nftables（默认）  2 iptables' '1 nftables (default)  2 iptables'
+ prompt_read '> ' backend || return 0; backend=${backend:-1}
+ case $backend in 1) backend=nftables;; 2) backend=iptables;; *) return 1;; esac
+ prompt_read "$(L '起始端口 [20000]：' 'Start port [20000]: ')" start || return 0; start=${start:-20000}
+ prompt_read "$(L '结束端口 [40000]：' 'End port [40000]: ')" end || return 0; end=${end:-40000}
+ if ! valid_port "$start" || ! valid_port "$end" || ! ((10#$start>=1024 && 10#$start<=10#$end && 10#$end-10#$start<=20000)); then err "$(L '范围非法，最多20001个端口' 'Invalid range, maximum 20001 ports')"; return 1; fi
+ start=$((10#$start));end=$((10#$end));target=$(protocol_port hysteria2) || return 1
  if [[ -f $BASE/users.json ]]; then users_guard && users_engine hop_check "$start" "$end" || return 1; fi
- confirm "$(L "启用 UDP $start-$end 转发到 443？" "Forward UDP $start-$end to 443?")" || return 0
- nft list table ip singbox_v2_hop >/dev/null 2>&1 && { err "$(L '已存在端口跳跃规则，请先关闭' 'Hopping table exists; disable it first')"; return 1; }
- cat >"$SYSTEMD_DIR/singbox-v2-hop.service" <<EOF
+ confirm "$(L "将 UDP $start-$end 转发到 HY2 监听端口 $target？" "Forward UDP $start-$end to HY2 listener $target?")" || return 0
+ if [[ $backend == nftables ]]; then require_cmd nft || return 1; else command -v iptables >/dev/null || { apt-get update && apt-get install -y iptables || return 1; }; fi
+ if command -v nft >/dev/null && nft list table ip singbox_v2_hop >/dev/null 2>&1; then err "$(L '已有跳跃规则，请先关闭' 'Hopping rules exist; disable first')"; return 1; fi
+ if command -v iptables >/dev/null && iptables -w 5 -t nat -S SKYBYTE_HY2_HOP >/dev/null 2>&1; then err "$(L '已有跳跃链，请先关闭，拒绝覆盖' 'Hopping chain exists; disable first; refusing overwrite')"; return 1; fi
+ if [[ $backend == nftables ]]; then
+ cat >"$BASE/hop.nft" <<RULES
+add table ip singbox_v2_hop
+add chain ip singbox_v2_hop prerouting { type nat hook prerouting priority dstnat; policy accept; }
+add rule ip singbox_v2_hop prerouting udp dport $start-$end redirect to :$target
+RULES
+ cat >"$SYSTEMD_DIR/singbox-v2-hop.service" <<UNIT
 [Unit]
 Description=singbox V2 HY2 IPv4 port hopping
 After=network-online.target
@@ -562,21 +612,53 @@ ExecStart=/usr/sbin/nft -f $BASE/hop.nft
 ExecStop=/usr/sbin/nft delete table ip singbox_v2_hop
 [Install]
 WantedBy=multi-user.target
-EOF
- cat >"$BASE/hop.nft" <<EOF
-add table ip singbox_v2_hop
-add chain ip singbox_v2_hop prerouting { type nat hook prerouting priority dstnat; policy accept; }
-add rule ip singbox_v2_hop prerouting udp dport $start-$end redirect to :443
-EOF
- systemctl daemon-reload; systemctl enable --now singbox-v2-hop.service || { err "$(L '开启失败' 'Enable failed')"; return 1; }
- if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then ufw allow "$start:$end/udp"; warn "$(L '关闭跳跃后请按需要手动删除 UFW 范围规则' 'After disabling hopping, remove UFW range rules manually if needed')"; fi
- python3 - "$META" "$start" "$end" <<'PY'
+UNIT
+ else
+ cat >"$BASE/hop-iptables.sh" <<SCRIPT
+#!/usr/bin/env bash
+# SKYBYTE managed HY2 hopping
+set -Eeuo pipefail
+case \${1:-} in
+ start)
+  iptables -w 5 -t nat -N SKYBYTE_HY2_HOP
+  if ! iptables -w 5 -t nat -A SKYBYTE_HY2_HOP -p udp -j REDIRECT --to-ports $target || ! iptables -w 5 -t nat -A PREROUTING -p udp --dport $start:$end -j SKYBYTE_HY2_HOP; then
+   iptables -w 5 -t nat -F SKYBYTE_HY2_HOP; iptables -w 5 -t nat -X SKYBYTE_HY2_HOP; exit 1
+  fi;;
+ stop)
+  iptables -w 5 -t nat -D PREROUTING -p udp --dport $start:$end -j SKYBYTE_HY2_HOP || :
+  iptables -w 5 -t nat -F SKYBYTE_HY2_HOP || :
+  iptables -w 5 -t nat -X SKYBYTE_HY2_HOP || :;;
+ *) exit 1;;
+esac
+SCRIPT
+ chmod 700 "$BASE/hop-iptables.sh"
+ cat >"$SYSTEMD_DIR/singbox-v2-hop.service" <<UNIT
+[Unit]
+Description=singbox V2 HY2 IPv4 port hopping
+After=network-online.target
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/bash $BASE/hop-iptables.sh start
+ExecStop=/bin/bash $BASE/hop-iptables.sh stop
+[Install]
+WantedBy=multi-user.target
+UNIT
+ fi
+ if ! systemctl daemon-reload || ! systemctl enable --now singbox-v2-hop.service; then
+  systemctl stop singbox-v2-hop.service || :; err "$(L '跳跃规则启用失败' 'Hopping enable failed')"; return 1
+ fi
+ python3 - "$META" "$start" "$end" "$backend" "$target" <<'PY_HOP_ON'
 import json,sys
-p=sys.argv[1];d=json.load(open(p));d.update(hop=True,hop_start=int(sys.argv[2]),hop_end=int(sys.argv[3]))
+p=sys.argv[1];d=json.load(open(p));d.update(hop=True,hop_start=int(sys.argv[2]),hop_end=int(sys.argv[3]),hop_backend=sys.argv[4],hop_target=int(sys.argv[5]))
 with open(p,'w') as f:json.dump(d,f,indent=2)
-PY
- say '已启用。请在客户端配置 server_ports 和 hop_interval=30s' 'Enabled. Configure server_ports and hop_interval=30s on clients'; }
-latest(){ curl -4fsSL --max-time 25 https://api.github.com/repos/SagerNet/sing-box/releases/latest | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d.get("prerelease") and not d.get("draft"); print(d["tag_name"].lstrip("v"))'; }
+PY_HOP_ON
+ if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then ufw allow "$start:$end/udp" || return 1; fi
+ exports
+ say '客户端 JSON/YAML 已加入跳跃范围；小火箭请在客户端配置跳跃范围。云安全组也必须放行此范围。' 'JSON/YAML includes hopping ranges; configure hopping manually in Shadowrocket. Allow the provider UDP range too.'
+}
+
+latest(){ curl -fsSL --max-time 25 https://api.github.com/repos/SagerNet/sing-box/releases/latest | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d.get("prerelease") and not d.get("draft"); print(d["tag_name"].lstrip("v"))'; }
 update(){
  check_owned || return 1
  local new current
@@ -588,6 +670,7 @@ update(){
 }
 managed_restart(){
  local argo_active=false tunnel_active=false users_active=false
+ if [[ -f $BASE/warp-gateway.json ]] && systemctl is-active --quiet skybyte-warp-gateway.service; then systemctl restart skybyte-warp-gateway.service && systemctl is-active --quiet skybyte-warp-gateway.service || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-node.service ]] && systemctl is-active --quiet skybyte-argo-node.service; then argo_active=true; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-tunnel.service ]] && systemctl is-active --quiet skybyte-argo-tunnel.service; then tunnel_active=true; fi
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service; then users_guard || return 1; users_active=true; fi
@@ -603,47 +686,35 @@ apply_update(){
  candidate=$(mktemp "$BASE/sing-box.candidate.XXXXXX") || return 1
  snap=$(backup) || { rm -f "$candidate"; return 1; }
  download_binary "$new" "$candidate" || { rm -f "$candidate"; return 1; }
+ if [[ -f $BASE/warp-gateway.json ]]; then "$candidate" check -c "$BASE/warp-gateway.json" || { rm -f "$candidate"; return 1; }; fi
  "$candidate" check -c "$CONF" || { rm -f "$candidate"; return 1; }
  if [[ -f $BASE/argo-server.json ]]; then "$candidate" check -c "$BASE/argo-server.json" || { rm -f "$candidate"; return 1; }; fi
  if [[ -f $BASE/users.json ]]; then if ! users_guard || ! users_engine validate "$candidate"; then rm -f "$candidate"; return 1; fi; fi
  command install -m 755 "$candidate" "$BIN" || return 1; rm -f "$candidate"
  if ! managed_restart; then
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '更新失败，已恢复原二进制' 'Update failed; original binary restored')"; return 1
  fi
  ok "$(L '更新完成，请检查客户端连接' 'Updated; verify client connectivity')"
 }
 service_healthy(){ sleep 2; systemctl is-active --quiet sing-box; }
-update_auto(){
- check_owned || return 1
- local current new
- current=$("$BIN" version | awk 'NR==1{print $3}'); new=$(latest) || return 1
- [[ $current == "$new" ]] || apply_update "$new"
+retire_auto_update(){
+ local unit timer saved
+ unit=$SYSTEMD_DIR/singbox-v2-update.service;timer=$SYSTEMD_DIR/singbox-v2-update.timer
+ [[ -e $unit || -e $timer || -L $unit || -L $timer ]] || return 0
+ if [[ -L $unit || -L $timer ]] || { [[ -f $unit ]] && { ! grep -Fxq 'Description=sing-box v2 weekly update' "$unit" || ! grep -Fxq "ExecStart=/bin/bash $MANAGER_BIN --auto-update" "$unit"; }; } || { [[ -f $timer ]] && ! grep -Fxq 'Description=sing-box v2 weekly update timer' "$timer"; }; then
+  warn "$(L '旧更新服务归属异常，保留不修改' 'Legacy update unit ownership mismatch; retained')"; return 0
+ fi
+ mkdir -p "$BASE/manager-backups"
+ saved=$(mktemp -d "$BASE/manager-backups/legacy-auto.XXXXXX") || return 1
+ [[ ! -f $unit ]] || cp "$unit" "$saved/" || return 1
+ [[ ! -f $timer ]] || cp "$timer" "$saved/" || return 1
+ [[ ! -f $timer ]] || systemctl disable --now singbox-v2-update.timer || return 1
+ [[ ! -f $unit ]] || systemctl stop singbox-v2-update.service || return 1
+ rm -f "$unit" "$timer";systemctl daemon-reload || return 1
+ say "已停用旧每周更新，服务文件备份：$saved" "Legacy weekly updater retired; unit backups: $saved"
 }
-configure_auto(){ need_root; prompt_options '1 启用每周自动更新  2 关闭' '1 Enable weekly automatic updates  2 Disable'; prompt_read '> ' x
- if [[ $x == 1 ]]; then
- check_owned || return 1
- warn "$(L '自动更新会短暂中断服务；请保留备份' 'Automatic updates briefly interrupt service; retain backups')"
- cat >"$SYSTEMD_DIR/singbox-v2-update.service" <<EOF
-[Unit]
-Description=sing-box v2 weekly update
-After=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/bin/bash $MANAGER_BIN --auto-update
-EOF
- cat >"$SYSTEMD_DIR/singbox-v2-update.timer" <<'EOF'
-[Unit]
-Description=sing-box v2 weekly update timer
-[Timer]
-OnCalendar=Sun *-*-* 04:00:00
-RandomizedDelaySec=15min
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
- command install -m 700 "$SCRIPT_PATH" "$MANAGER_BIN"; systemctl daemon-reload; systemctl enable --now singbox-v2-update.timer
- elif [[ $x == 2 ]]; then systemctl disable --now singbox-v2-update.timer 2>/dev/null || :; fi; }
+update_auto(){ warn "$(L '每周自动更新已移除，请使用手动更新' 'Weekly updates removed; use manual updates')"; }
 ipcheck(){ notice; confirm "$(L '访问 ipinfo.io 检查 IP 并保存本地报告？' 'Query ipinfo.io and save the IP report locally?')" || return 0; local stamp path; stamp=$(date +%Y%m%d-%H%M%S); path="$REPORT/ip-$stamp.json"; curl -4fsSL --max-time 20 https://ipinfo.io/json >"$path" || { rm -f "$path"; err "$(L 'IP 检测失败' 'IP lookup failed')"; return 1; }; chmod 600 "$path"; python3 -m json.tool "$path"; find "$REPORT" -type f -mtime +30 -delete; say "报告：${path}；不是风险或解锁报告" "Report: $path; not a reputation/unblocking test"; }
 netcheck(){ local stamp path; stamp=$(date +%Y%m%d-%H%M%S); path="$REPORT/net-$stamp.txt"; { echo "date=$(date -Is)"; echo 'route:'; ip route get 1.1.1.1; echo 'DNS:'; getent ahostsv4 github.com | sed -n '1,3p'; echo 'HTTP:'; curl -4 -o /dev/null -sS --max-time 15 -w 'github_https_code=%{http_code} connect=%{time_connect}s total=%{time_total}s\n' https://github.com || :; echo 'TCP listeners:'; ss -lnt '( sport = :443 )'; echo 'UDP listeners:'; ss -lnu '( sport = :443 )'; } | tee "$path"; chmod 600 "$path"; find "$REPORT" -type f -mtime +30 -delete; say '仅为基础连通性，不测三网回程、UDP 丢包或吞吐量' 'Basic connectivity only; no route-back, UDP loss or throughput testing'; }
 protocol_port(){
@@ -710,9 +781,9 @@ restore(){
  users_stop || return 1
  cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
  command install -m 755 "$path/sing-box.bin" "$BIN" || return 1
- if ! "$BIN" check -c "$CONF" || ! systemctl restart sing-box || ! service_healthy || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path"; then
+ if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! systemctl restart sing-box || ! service_healthy || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path"; then
   cp -a "$snap/config/." "$(dirname "$CONF")"; cp "$snap/state.json" "$META"
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '恢复失败，已回滚' 'Restore failed; rolled back')"; return 1
  fi
  # Hopping is host state: avoid restoring metadata claiming rules that are absent.
@@ -1098,7 +1169,12 @@ with lock():
   if any(u['name']==n and not u.get('deleted') for u in d['users']):error('用户名已存在','User name already exists')
   template=json.load(open(conf));metadata=json.load(open(meta));supported={'vless','hysteria2'}
   require(not template.get('services') and not template.get('endpoints') and len(template['inbounds'])<=2 and len({i['type'] for i in template['inbounds']})==len(template['inbounds']))
-  if not template['inbounds'] or any(i['type'] not in supported for i in template['inbounds']) or any(o['type']!='direct' for o in template['outbounds']):error('用户功能只支持托管的 Reality/HY2 直连配置','User quotas support managed direct Reality/HY2 configs only')
+  warp_path=base/'warp-state.json';warp=None;warp_before=None
+  if warp_path.exists():
+   if warp_path.is_symlink():error('WARP 数据异常','Invalid WARP state')
+   warp=json.loads(warp_path.read_text());warp_before=copy.deepcopy(warp);require(warp.get('owner')=='SKYBYTE WARP routing v1' and warp.get('schema')==1)
+   require({k:template.get(k) for k in ('route','outbounds')}==warp['configs'][conf]['applied'])
+  if not template['inbounds'] or any(i['type'] not in supported for i in template['inbounds']) or (warp is None and any(o['type']!='direct' for o in template['outbounds'])):error('用户功能只支持托管的 Reality/HY2 配置','User quotas support managed Reality/HY2 configs only')
   uid=secrets.token_hex(8);p=userdir(uid);p.mkdir(mode=0o700)
   try:
    used={u[k] for u in d['users'] for k in ['port','api_port']}
@@ -1109,7 +1185,7 @@ with lock():
    template.pop('experimental',None)
    template['experimental']={'clash_api':{'external_controller':'127.0.0.1:'+str(controller),'secret':token}}
    for inbound in template['inbounds']:
-    inbound['listen_port']=port;inbound['listen']='0.0.0.0'
+    inbound['listen_port']=port;inbound['listen']='::' if ':' in metadata['ip'] else '0.0.0.0'
     if inbound['type']=='vless':
      if not inbound.get('tls',{}).get('reality',{}).get('enabled'):error('只支持 Reality VLESS','Only Reality VLESS is supported')
      inbound['users']=[{'name':uid,'uuid':identity,'flow':'xtls-rprx-vision'}]
@@ -1121,8 +1197,11 @@ with lock():
    metadata.update(node_name=n,uuid=identity,hy2_password=password,hop=False,managed_certificates=[str(p/'certificate.crt'),str(p/'private.key')] if (p/'certificate.crt').exists() else [])
    atomic(p/'server.json',template);atomic(p/'state.json',metadata);config_check(p/'server.json')
    u={'id':uid,'name':n,'quota_bytes':q,'upload':0,'download':0,'expires_at':int(time.time())+valid,'enabled':True,'port':port,'api_port':controller,'api_secret':token,'running':False,'metering_blocked':False}
+   if warp is not None:
+    warp['configs'][str(p/'server.json')]=copy.deepcopy(warp['configs'][conf]);atomic(warp_path,warp)
    d['users'].append(u);atomic(db,d);print(uid)
   except Exception:
+   if warp_before is not None:atomic(warp_path,warp_before)
    for child in p.iterdir():child.unlink()
    p.rmdir();raise
  elif action=='service':
@@ -1575,7 +1654,7 @@ argo_install(){
   if [[ -f $stage/$file ]]; then mv "$stage/$file" "$BASE/$file" || { rm -rf "$stage"; return 1; }; fi
  done
  rmdir "$stage"
- if ! argo_setup_units || ! systemctl enable --now skybyte-argo-node.service || ! systemctl enable --now skybyte-argo-tunnel.service; then
+ if ! warp_reconcile || ! argo_setup_units || ! systemctl enable --now skybyte-argo-node.service || ! systemctl enable --now skybyte-argo-tunnel.service; then
   err "$(L 'Argo 启动失败；保留配置供诊断，原节点配置未改变' 'Argo startup failed; config retained for diagnosis. Existing node config was not changed')"; return 1
  fi
  if ! argo_wait; then warn "$(L '隧道尚未注册连接；请使用 Argo 状态检查 Token、路由或出站网络。' 'Tunnel not registered yet; use Argo status to check token, route or outbound connectivity.')"; return 1; fi
@@ -1677,6 +1756,7 @@ argo_remove_internal(){
  argo_guard || return 1
  if [[ -f $SYSTEMD_DIR/skybyte-argo-tunnel.service ]]; then systemctl disable --now skybyte-argo-tunnel.service || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-node.service ]]; then systemctl disable --now skybyte-argo-node.service || return 1; fi
+ warp_engine forget_argo || return 1
  for file in argo-state.json argo-server.json argo-empty.yml argo.token cloudflared; do rm -f -- "$BASE/$file"; done
  rm -f -- "$SYSTEMD_DIR/skybyte-argo-node.service" "$SYSTEMD_DIR/skybyte-argo-tunnel.service"
  systemctl daemon-reload
@@ -1720,7 +1800,7 @@ argo_manager(){
 }
 
 uninstall_manager(){
- certificate_guard || return 1
+ certificate_guard && warp_guard && hop_guard || return 1
  users_guard || return 1
  need_root
  check_owned || return 1
@@ -1765,11 +1845,12 @@ PY
  users_stop || return 1
  if [[ -f $BASE/users.json ]]; then users_engine ledger "$snap" || return 1; fi
  users_remove || return 1
+ warp_remove || return 1
  if [[ -f $BASE/argo-state.json ]]; then argo_remove_internal || return 1; fi
  if [[ -f $SYSTEMD_DIR/singbox-v2-update.timer ]]; then systemctl disable --now singbox-v2-update.timer || return 1; fi
  if [[ -f $SYSTEMD_DIR/singbox-v2-update.service ]]; then systemctl stop singbox-v2-update.service || return 1; fi
  if [[ -f $SYSTEMD_DIR/singbox-v2-hop.service ]]; then systemctl disable --now singbox-v2-hop.service || return 1; fi
- if [[ -f $SYSTEMD_DIR/singbox-v2-hop.service ]] && command -v nft >/dev/null && nft list table ip singbox_v2_hop >/dev/null 2>&1; then nft delete table ip singbox_v2_hop || return 1; fi
+ if [[ -f $SYSTEMD_DIR/singbox-v2-hop.service ]] && grep -Fxq "ExecStart=/usr/sbin/nft -f $BASE/hop.nft" "$SYSTEMD_DIR/singbox-v2-hop.service" && command -v nft >/dev/null && nft list table ip singbox_v2_hop >/dev/null 2>&1; then nft delete table ip singbox_v2_hop || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-certificate.timer ]]; then systemctl disable --now skybyte-certificate.timer || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-certificate.service ]]; then systemctl stop skybyte-certificate.service || return 1; fi
  rm -f "$SYSTEMD_DIR/skybyte-certificate.timer" "$SYSTEMD_DIR/skybyte-certificate.service" "$BASE/certificate-status.json"
@@ -1777,7 +1858,7 @@ PY
  # Remove explicit managed files only; never recursively delete user configuration directories.
  rm -f -- "$unit" "$SYSTEMD_DIR/singbox-v2-update.service" "$SYSTEMD_DIR/singbox-v2-update.timer" "$SYSTEMD_DIR/singbox-v2-hop.service" "$BIN" "$CONF"
  while IFS= read -r file; do if [[ -n $file ]]; then rm -f -- "$file"; fi; done <<<"$managed_certs"
- for file in state.json language.conf hop.nft nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt shadowrocket-native-nodes.txt shadowrocket-native-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
+ for file in state.json language.conf hop.nft hop-iptables.sh nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt shadowrocket-native-nodes.txt shadowrocket-native-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
  # Remove executable copies only when they are identifiable manager scripts.
  for file in "$MANAGER_BIN" "$MANAGER_LIB"; do
   if [[ -f $file && ! -L $file ]] && grep -q '^# SKYBYTE Manager V2.1 community manager;' "$file"; then rm -f -- "$file"; fi
@@ -2036,6 +2117,582 @@ UNIT
 }
 
 
+media_check(){
+ require_cmd curl && require_cmd python3 || return 1
+ local selection paths port=''
+ say '检测匿名服务页面和地区提示；没有登录或实际播放验证。HTTP 200 不代表已解锁。' 'Checks anonymous pages/region hints, without login or playback verification. HTTP 200 does not mean unlocked.'
+ prompt_options '1 直连 IPv4  2 直连 IPv6  3 两者  4 WARP  5 IPv4 与 WARP 对比  0 返回' '1 Direct IPv4  2 Direct IPv6  3 Both  4 WARP  5 IPv4/WARP comparison  0 Back'
+ prompt_read '> ' selection || return 0
+ case $selection in 1) paths=4;; 2) paths=6;; 3) paths=4,6;; 4) paths=warp;; 5) paths=4,warp;; 0) return 0;; *) return 1;; esac
+ if [[ $paths == *warp* ]]; then port=$(warp_engine port) && warp_verify "$port" || return 1; fi
+ python3 - "$paths" "$REPORT" "$port" "${LANGUAGE_CHOICE:-zh_CN}" <<'PY_MEDIA'
+"""Anonymous service-page probes; evidence is never a playback guarantee."""
+import concurrent.futures
+import datetime
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+import urllib.parse
+
+PROBES={
+ 'Netflix':['https://www.netflix.com/title/81280792','https://www.netflix.com/title/70143836'],
+ 'Disney+':['https://www.disneyplus.com/'],
+ 'YouTube Premium':['https://www.youtube.com/premium'],
+ 'Amazon Prime Video':['https://www.primevideo.com/'],
+ 'TikTok':['https://www.tiktok.com/','https://www.tiktok.com/passport/web/store_region/']}
+LABELS={
+ 'catalog':('片目页面有视频信息；播放未验证','Catalog video metadata; playback unverified'),
+ 'supported':('页面声明地区支持；播放未验证','Page reports supported location; playback unverified'),
+ 'offer':('页面提供订阅入口；订阅资格未验证','Subscription offer shown; eligibility unverified'),
+ 'restricted':('页面明确提示地区限制','Explicit location restriction on page'),
+ 'unknown':('页面可访问；解锁状态未知','Page reachable; unlock status unknown'),
+ 'verification':('访问被拒绝或需验证；解锁未知','Access denied/verification required; unlock unknown'),
+ 'network':('连接/DNS/TLS失败；解锁未知','Connection/DNS/TLS failed; unlock unknown'),
+ 'changed':('响应异常或页面变化；解锁未知','Unexpected response/page changed; unlock unknown')}
+
+def fetch(url,path='4',port=None,post=False):
+    # Ignore curlrc/proxy environment. No login cookies, authorization or node data.
+    with tempfile.TemporaryDirectory() as tmp:
+        body=Path(tmp)/'body'
+        cmd=['curl','-q','--silent','--show-error','--location','--max-redirs','4',
+             '--proto','=https','--proto-redir','=https','--connect-timeout','4','--max-time','12',
+             '--max-filesize','8388608','--limit-rate','1M','--user-agent','Mozilla/5.0 SKYBYTE-Manager/2.4',
+             '--header','Accept-Language: en-US,en;q=0.9','--output',str(body),
+             '--write-out','%{http_code}\n%{url_effective}']
+        if path=='warp':cmd+=['--noproxy','','--proxy','socks5h://127.0.0.1:'+str(port)]
+        else:cmd+=['--noproxy','*','-'+path]
+        if post:cmd+=['--request','POST','--data','']
+        cmd.append(url)
+        try:r=subprocess.run(cmd,capture_output=True,text=True,timeout=15)
+        except (subprocess.TimeoutExpired,OSError):return {'error':True,'code':0,'body':'','url':url}
+        lines=r.stdout.splitlines()
+        code=int(lines[0]) if lines and lines[0].isdigit() else 0
+        text=body.read_bytes()[:8388608].decode('utf-8','replace') if body.exists() else ''
+        return {'error':r.returncode!=0,'code':code,'body':text,'url':lines[1] if len(lines)>1 else url}
+
+def country(text,key):
+    m=re.search(r'"'+re.escape(key)+r'"\s*:\s*"([A-Za-z]{2})"',text)
+    return m[1].upper() if m else '-'
+
+def classify(service,responses):
+    region='-';main=responses[0];body=main['body'];low=body.lower()
+    result={'service':service,'status':'unknown','region':region,'http_code':main['code']}
+    if main['error']:result['status']='network';return result
+    if main['code'] in (401,403,429,451) or any(x in low for x in ['verify you are human','cf-chl-','robot check','unusual traffic']):
+        result['status']='verification';return result
+    if main['code']!=200:result['status']='changed';return result
+    if service=='Netflix':
+        m=re.search(r'"requestCountry"\s*:\s*\{\s*"id"\s*:\s*"([A-Za-z]{2})"',body)
+        result['region']=m[1].upper() if m else '-'
+        if any(not r['error'] and r['code']==200 and re.search(r'<meta\b[^>]*(?:property|name)=["\']og:video',r['body'],re.I) for r in responses):result['status']='catalog'
+    elif service=='Disney+':
+        result['region']=country(body,'countryCode')
+        if re.search(r'"inSupportedLocation"\s*:\s*false',body) or '/unavailable' in urllib.parse.urlsplit(main['url']).path:
+            result['status']='restricted'
+        elif re.search(r'"inSupportedLocation"\s*:\s*true',body):result['status']='supported'
+    elif service=='YouTube Premium':
+        result['region']=country(body,'countryCode')
+        if 'premium is not available in your country' in low:result['status']='restricted'
+        elif 'purchaseButtonOverride' in body or 'start trial' in low:result['status']='offer'
+    elif service=='Amazon Prime Video':
+        result['region']=country(body,'currentTerritory')
+        if 'this video is currently unavailable to watch in your location' in low:result['status']='restricted'
+    elif service=='TikTok':
+        if len(responses)>1 and not responses[1]['error'] and responses[1]['code']==200:
+            try:
+                region=json.loads(responses[1]['body'])['data']['store_region']
+                if re.fullmatch('[A-Za-z]{2}',region):result['region']=region.upper()
+            except (ValueError,KeyError,TypeError):pass
+        if 'not available in your region' in low:result['status']='restricted'
+    return result
+
+def probe(service,path,port):
+    rows=[fetch(url,path,port,service=='TikTok' and n==1) for n,url in enumerate(PROBES[service])]
+    return classify(service,rows)
+
+def run(paths,report,port=None,language='zh_CN'):
+    en=language=='en_US';results=[]
+    for path in paths:
+        if path=='warp' and not (port and 1024<=port<=65535):raise ValueError('Invalid WARP proxy port')
+        label={'4':'VPS IPv4','6':'VPS IPv6','warp':'WARP proxy (remote DNS)'}[path]
+        print('\n'+label+'\n'+'-'*64,flush=True)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as pool:
+            rows=list(pool.map(lambda s:probe(s,path,port),PROBES))
+        for row in rows:
+            row['path']=path;results.append(row)
+            color='\033[1;32m' if row['status'] in ('catalog','offer','supported') else '\033[1;33m'
+            if not __import__('sys').stdout.isatty() or os.environ.get('NO_COLOR'):color=''
+            print(color+row['service']+' | '+LABELS[row['status']][int(en)]+' | '+('Region hint: ' if en else '页面地区提示：')+row['region']+' | HTTP '+str(row['http_code'])+('\033[0m' if color else ''))
+    report=Path(report);report.mkdir(exist_ok=True,mode=0o700)
+    if report.is_symlink():raise ValueError('Report directory is a symlink')
+    fd,tmp=tempfile.mkstemp(prefix='media-',suffix='.json',dir=report)
+    with os.fdopen(fd,'w') as f:
+        json.dump({'created_at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'playback_verified':False,'results':results},f,ensure_ascii=False,indent=2)
+    print(('Report: ' if en else '报告：')+tmp)
+    return results
+
+if __name__=='__main__':
+    import sys
+    paths,report,port,lang=sys.argv[1:]
+    run(paths.split(','),report,int(port) if port else None,lang)
+PY_MEDIA
+}
+
+warp_engine(){
+ python3 - "$BASE" "$CONF" "$BIN" "$@" <<'PY_WARP'
+"""Owned WARP routing transactions. Node credentials are never edited."""
+import base64
+import configparser
+import copy
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import tempfile
+
+OWNER='SKYBYTE WARP routing v1'
+MEDIA=['netflix.com','netflix.net','nflxext.com','nflximg.com','nflximg.net','nflxso.net','nflxvideo.net',
+       'disneyplus.com','disney-plus.net','dssott.com','bamgrid.com','youtube.com','youtu.be','googlevideo.com','ytimg.com','youtubei.googleapis.com',
+       'primevideo.com','amazonvideo.com','aiv-cdn.net','aiv-delivery.net','tiktok.com','tiktokv.com','tiktokcdn.com','tiktokcdn-us.com','byteoversea.com','ibytedtos.com']
+AI=['openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','anthropic.com','claude.ai','claude.com']
+FIELDS=('route','outbounds')
+
+def atomic(path,data):
+    path=Path(path)
+    if path.is_symlink():raise ValueError('Refusing WARP symlink')
+    fd,tmp=tempfile.mkstemp(dir=path.parent)
+    try:
+        with os.fdopen(fd,'w') as f:json.dump(data,f,indent=2);f.flush();os.fsync(f.fileno())
+        os.replace(tmp,path)
+    finally:
+        if os.path.exists(tmp):os.unlink(tmp)
+
+def read_state(base):
+    p=base/'warp-state.json'
+    if p.is_symlink():raise ValueError('WARP state is a symlink')
+    if not p.exists():return None
+    d=json.loads(p.read_text())
+    if d.get('owner')!=OWNER or d.get('schema')!=1 or d['mode'] not in ('direct','restricted','global'):raise ValueError('WARP state ownership/schema mismatch')
+    if type(d['port']) is not int or not 1024<=d['port']<=65535 or type(d['udp']) is not bool:raise ValueError('Invalid WARP proxy settings')
+    return d
+
+def view(cfg):return {k:copy.deepcopy(cfg.get(k)) for k in FIELDS}
+
+def put(cfg,routing):
+    for k,v in routing.items():
+        if v is None:cfg.pop(k,None)
+        else:cfg[k]=copy.deepcopy(v)
+    return cfg
+
+def render(baseline,mode,port,udp,domains):
+    result=copy.deepcopy(baseline)
+    if mode=='direct':return result
+    result['outbounds'].append({'type':'socks','tag':'skybyte-warp','server':'127.0.0.1','server_port':port,'version':'5',**({} if udp else {'network':'tcp'})})
+    route=result['route'];prefix=[]
+    if mode=='restricted':
+        prefix=[{'action':'sniff','timeout':'500ms'}]
+        if not udp:prefix.append({'domain_suffix':domains,'network':'udp','action':'reject'})
+        prefix.append({'domain_suffix':domains,'action':'route','outbound':'skybyte-warp'})
+    else:
+        route['final']='skybyte-warp'
+        if not udp:prefix=[{'network':'udp','action':'reject'}]
+    route['rules']=prefix+route.get('rules',[])
+    return result
+
+def config_paths(base,conf):
+    paths=[conf]
+    if (base/'argo-state.json').exists():paths.append(base/'argo-server.json')
+    if (base/'users.json').exists():
+        users=json.loads((base/'users.json').read_text())
+        if users.get('owner')!='SKYBYTE user quotas v1':raise ValueError('Invalid user owner')
+        for u in users['users']:
+            if not re.fullmatch('[0-9a-f]{16}',u['id']):raise ValueError('Invalid account ID')
+            if not u.get('deleted'):paths.append(base/'users'/u['id']/'server.json')
+    for p in paths:
+        if p.is_symlink() or p.parent.is_symlink():raise ValueError('Config symlink')
+    return paths
+
+def domains_parse(text):
+    domains=sorted(set(text.replace(',', ' ').split()))
+    if not domains or len(domains)>200 or any(len(x)>253 or not re.fullmatch(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}',x) for x in domains):raise ValueError('Invalid domain suffix list')
+    return sorted(set(d.lower() for d in domains))
+
+def switch(base,conf,binary,mode,port,udp,domains):
+    if mode not in ('direct','restricted','global') or not 1024<=port<=65535:raise ValueError('Invalid WARP mode/port')
+    prior=read_state(base)
+    state=copy.deepcopy(prior) if prior else {'owner':OWNER,'schema':1,'configs':{}}
+    originals={};planned={}
+    for path in config_paths(base,conf):
+        cfg=json.loads(path.read_text());originals[path]=cfg
+        old=state['configs'].get(str(path))
+        if old:
+            if view(cfg)!=old['applied']:raise ValueError('Routing changed outside manager; refusing overwrite: '+str(path))
+            baseline=old['baseline']
+        else:
+            if cfg.get('endpoints') or any(o['type']!='direct' for o in cfg['outbounds']) or cfg['route'].get('final')!='direct':raise ValueError('Unmanaged routing; refusing overwrite')
+            baseline=view(cfg)
+        routing=render(baseline,mode,port,udp,domains)
+        candidate=put(copy.deepcopy(cfg),routing)
+        fd,tmp=tempfile.mkstemp(dir=path.parent)
+        try:
+            with os.fdopen(fd,'w') as f:json.dump(candidate,f)
+            r=subprocess.run([binary,'check','-c',tmp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+            if r.returncode:raise ValueError('WARP candidate config failed validation')
+        finally:os.unlink(tmp)
+        planned[path]=candidate;state['configs'][str(path)]={'baseline':baseline,'applied':routing}
+    state.update(mode=mode,port=port,udp=udp,domains=domains)
+    try:
+        for p,cfg in planned.items():atomic(p,cfg)
+        atomic(base/'warp-state.json',state)
+    except BaseException:
+        for p,cfg in originals.items():atomic(p,cfg)
+        if prior:atomic(base/'warp-state.json',prior)
+        elif (base/'warp-state.json').exists():(base/'warp-state.json').unlink()
+        raise
+
+def restore_routing(base,conf,snapshot,binary):
+    saved=snapshot/'warp-state.json'
+    new=json.loads(saved.read_text()) if saved.exists() else None
+    if saved.is_symlink():raise ValueError('Backup state symlink')
+    prior=read_state(base)
+    originals={}
+    if new and (new.get('owner')!=OWNER or new.get('schema')!=1):raise ValueError('Invalid WARP backup')
+    planned={}
+    for path in config_paths(base,conf):
+        if path==conf:source=snapshot/'config'/'config.json'
+        elif path==base/'argo-server.json':source=snapshot/'argo-server.json'
+        else:source=snapshot/'users'/path.parent.name/'server.json'
+        current=json.loads(path.read_text());originals[path]=copy.deepcopy(current)
+        if source.exists():
+            if source.is_symlink():raise ValueError('Backup symlink')
+            routing=view(json.loads(source.read_text()))
+        else:
+            old=prior['configs'].get(str(path)) if prior else None
+            if old:
+                if view(current)!=old['applied']:raise ValueError('New account routing changed; refusing overwrite')
+                baseline=old['baseline']
+            else:
+                if any(o['type']!='direct' for o in current['outbounds']):raise ValueError('Unmanaged new account routing')
+                baseline=view(current)
+            routing=render(baseline,new['mode'],new['port'],new['udp'],new['domains']) if new else baseline
+            if new:new['configs'][str(path)]={'baseline':baseline,'applied':routing}
+        planned[path]=put(current,routing)
+    for path,cfg in planned.items():
+        fd,tmp=tempfile.mkstemp(dir=path.parent)
+        try:
+            with os.fdopen(fd,'w') as f:json.dump(cfg,f)
+            r=subprocess.run([binary,'check','-c',tmp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+            if r.returncode:raise ValueError('Restored WARP config failed validation')
+        finally:os.unlink(tmp)
+    try:
+        for path,cfg in planned.items():atomic(path,cfg)
+        if new:atomic(base/'warp-state.json',new)
+        elif (base/'warp-state.json').exists():(base/'warp-state.json').unlink()
+    except BaseException:
+        for path,cfg in originals.items():atomic(path,cfg)
+        if prior:atomic(base/'warp-state.json',prior)
+        raise
+
+def gateway(profile,port,target,binary):
+    p=configparser.ConfigParser(interpolation=None,strict=True)
+    try:
+        with open(profile) as f:p.read_file(f)
+    except configparser.Error:raise ValueError('Invalid WireGuard profile') from None
+    if set(p.sections())!={'Interface','Peer'}:raise ValueError('Expected one Interface and Peer')
+    if set(p['Interface'])-{'privatekey','address','dns','mtu','listenport'} or set(p['Peer'])-{'publickey','allowedips','endpoint','persistentkeepalive','reserved'}:raise ValueError('Unsupported profile directives; scripts are never executed')
+    a=p['Interface'];b=p['Peer']
+    for key in (a['privatekey'],b['publickey']):
+        if len(base64.b64decode(key,validate=True))!=32:raise ValueError('Invalid WireGuard key')
+    addresses=[str(ipaddress.ip_interface(x.strip())) for x in a['address'].split(',')]
+    allowed=[str(ipaddress.ip_network(x.strip(),strict=False)) for x in b['allowedips'].split(',')]
+    if {ipaddress.ip_interface(x).version for x in addresses}!={4,6} or set(allowed)!={'0.0.0.0/0','::/0'}:raise ValueError('A dual-stack WARP profile is required')
+    endpoint=b['endpoint'].strip();match=re.fullmatch(r'(?:\[([^]]+)\]|([^:\s]+)):(\d+)',endpoint)
+    if not match:raise ValueError('Invalid peer Endpoint')
+    address=match[1] or match[2];peer_port=int(match[3])
+    if not 1<=peer_port<=65535:raise ValueError('Invalid peer port')
+    reserved=[int(x.strip()) for x in b.get('reserved','0,0,0').split(',')]
+    if len(reserved)!=3 or any(not 0<=x<=255 for x in reserved):raise ValueError('Invalid reserved bytes')
+    mtu=int(a.get('mtu','1280'));listen=int(a.get('listenport','0'))
+    if not 1280<=mtu<=9000 or not 0<=listen<=65535:raise ValueError('Invalid MTU/listen port')
+    cfg={'log':{'level':'warn'},'inbounds':[{'type':'socks','tag':'warp-local','listen':'127.0.0.1','listen_port':port}],
+         'outbounds':[{'type':'direct','tag':'direct'}],
+         'endpoints':[{'type':'wireguard','tag':'warp-wg','system':False,'address':addresses,'private_key':a['privatekey'],'listen_port':listen,'mtu':mtu,
+                       'peers':[{'address':address,'port':peer_port,'public_key':b['publickey'],'allowed_ips':allowed,'reserved':reserved,'persistent_keepalive_interval':int(b.get('persistentkeepalive','25'))}]}],
+         'dns':{'servers':[{'type':'https','tag':'warp-dns','server':'1.1.1.1','path':'/dns-query','detour':'warp-wg'},{'type':'local','tag':'bootstrap'}]},
+         'route':{'final':'warp-wg','default_domain_resolver':'warp-dns'}}
+    try:ipaddress.ip_address(address)
+    except ValueError:cfg['endpoints'][0]['domain_resolver']='bootstrap'
+    fd,tmp=tempfile.mkstemp(dir=target.parent)
+    try:
+        with os.fdopen(fd,'w') as f:json.dump(cfg,f)
+        r=subprocess.run([binary,'check','-c',tmp],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+        if r.returncode:raise ValueError('Gateway config failed validation')
+        atomic(target,cfg)
+    finally:os.unlink(tmp)
+
+if __name__=='__main__':
+    import sys
+    base,conf,binary,action,*args=sys.argv[1:];base=Path(base);conf=Path(conf)
+    if action=='switch':switch(base,conf,binary,args[0],int(args[1]),args[2]=='true',domains_parse(args[3]))
+    elif action=='restore':restore_routing(base,conf,Path(args[0]),binary)
+    elif action=='gateway':gateway(args[0],int(args[1]),base/'warp-gateway.json',binary)
+    elif action=='port':
+        state=read_state(base)
+        if not state:raise ValueError('WARP routing is not configured')
+        print(state['port'])
+    elif action=='status':
+        state=read_state(base)
+        print('WARP: '+(state['mode']+' | 127.0.0.1:'+str(state['port'])+' | UDP: '+str(state['udp']) if state else 'not configured'))
+    elif action=='forget_argo':
+        state=read_state(base)
+        if state:
+            state['configs'].pop(str(base/'argo-server.json'),None);atomic(base/'warp-state.json',state)
+    elif action=='defaults':print(' '.join(MEDIA+AI))
+    elif action=='guard':read_state(base)
+    else:raise ValueError('Unknown WARP action')
+PY_WARP
+}
+warp_guard(){
+ local file unit=$SYSTEMD_DIR/skybyte-warp-gateway.service
+ for file in warp-state.json warp-gateway.json warp-client.json; do [[ ! -L $BASE/$file ]] || return 1; done
+ if [[ -e $unit || -L $unit ]]; then
+  if [[ -L $unit ]] || ! grep -Fxq 'Description=SKYBYTE managed WARP gateway' "$unit" || ! grep -Fxq "ExecStart=$BIN run -c $BASE/warp-gateway.json" "$unit"; then err "$(L 'WARP 网关归属异常' 'WARP gateway ownership mismatch')"; return 1; fi
+ fi
+ if [[ -f $BASE/warp-gateway.json && ! -f $unit ]]; then err "$(L '已有非托管网关配置，拒绝覆盖' 'Unmanaged gateway config exists; refusing overwrite')"; return 1; fi
+ if [[ -f $BASE/warp-client.json ]]; then python3 - "$BASE/warp-client.json" <<'PY_WARP_OWNER'
+import json,sys
+s=json.load(open(sys.argv[1]));assert s['owner']=='SKYBYTE WARP client v1' and type(s['port']) is int and 1024<=s['port']<=65535
+PY_WARP_OWNER
+ fi
+ warp_engine guard
+}
+warp_verify(){
+ local port=$1 trace
+ valid_port "$port" && ((10#$port>=1024)) || return 1
+ trace=$(curl -q -fsSL --noproxy '' --proxy "socks5h://127.0.0.1:$port" --proto '=https' --proto-redir '=https' --max-time 12 --max-filesize 65536 https://www.cloudflare.com/cdn-cgi/trace) || { err "$(L 'WARP 代理连接失败' 'WARP proxy connection failed')"; return 1; }
+ if ! printf '%s\n' "$trace" | grep -Eq '^warp=(on|plus)$'; then err "$(L '代理未通过 WARP 出口验证，拒绝应用' 'Proxy did not verify as WARP; refusing apply')"; return 1; fi
+ ok "$(L 'WARP 出口验证通过' 'WARP egress verified')"
+}
+warp_loopback(){
+ local port=$1 listeners address
+ require_cmd ss || return 1
+ listeners=$(ss -H -ltn "( sport = :$port )") || return 1
+ [[ -n $listeners ]] || { err "$(L '本地代理未监听' 'Local proxy is not listening')"; return 1; }
+ while read -r address; do
+  case $address in "127.0.0.1:$port"|"[::1]:$port"|"::1:$port") ;; *) err "$(L 'WARP 代理必须只监听回环地址' 'WARP proxy must listen only on loopback')"; return 1;; esac
+ done < <(printf '%s\n' "$listeners" | awk '{print $4}')
+}
+warp_resume(){
+ local admin=$1 argo=$2 users=$3
+ if [[ $admin == true ]]; then systemctl restart sing-box.service && service_healthy || return 1; fi
+ if [[ $argo == true ]]; then systemctl restart skybyte-argo-node.service && systemctl is-active --quiet skybyte-argo-node.service || return 1; fi
+ if [[ $users == true ]]; then systemctl start skybyte-users.service && systemctl is-active --quiet skybyte-users.service || return 1; fi
+}
+warp_switch(){
+ local mode=$1 port=$2 udp=$3 domains=$4 snap admin=false argo=false users=false
+ check_owned && warp_guard && users_guard && argo_guard || return 1
+ if [[ $mode != direct ]]; then warp_loopback "$port" && warp_verify "$port" || return 1; fi
+ snap=$(backup) || return 1
+ if systemctl is-active --quiet sing-box.service; then admin=true; fi
+ if [[ -f $BASE/argo-state.json ]] && systemctl is-active --quiet skybyte-argo-node.service; then argo=true; fi
+ if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service; then users=true; users_stop || return 1; fi
+ if ! warp_engine switch "$mode" "$port" "$udp" "$domains"; then warp_resume "$admin" "$argo" "$users" || :; return 1; fi
+ if ! warp_resume "$admin" "$argo" "$users"; then
+  [[ $users != true ]] || users_stop || :
+  warp_engine restore "$snap" || return 1
+  warp_resume "$admin" "$argo" "$users" || :
+  err "$(L 'WARP 分流重启失败，已回滚路由' 'WARP restart failed; routing rolled back')"; return 1
+ fi
+ ok "$(L '已应用出站模式：' 'Outbound mode applied: ')$mode"
+ say "备份：$snap" "Backup: $snap"
+}
+warp_proxy_capability(){
+ python3 - "$1" <<'PY_SOCKS_CAP'
+import socket,struct,sys
+port=int(sys.argv[1]);assert 1024<=port<=65535
+with socket.create_connection(('127.0.0.1',port),timeout=3) as s:
+ def read_exact(n):
+  data=b''
+  while len(data)<n:
+   part=s.recv(n-len(data))
+   if not part:raise ConnectionError('SOCKS reply ended early')
+   data+=part
+  return data
+ s.sendall(b'\x05\x01\x00');hello=read_exact(2)
+ if hello!=b'\x05\x00':raise ValueError('SOCKS5 no-auth handshake failed')
+ s.sendall(b'\x05\x03\x00\x01'+socket.inet_aton('127.0.0.1')+struct.pack('!H',0))
+ try:reply=read_exact(4)
+ except (TimeoutError,ConnectionError):reply=b''
+ print('true' if reply[:2]==b'\x05\x00' else 'false')
+PY_SOCKS_CAP
+}
+warp_install_client(){
+ need_root; check_owned && warp_guard || return 1
+ local os_id code port tmp registration
+ if command -v warp-cli >/dev/null; then err "$(L '已有 WARP 客户端，请用现有本机代理选项，避免覆盖其设置' 'WARP client exists; use the existing local proxy option to preserve its settings')"; return 1; fi
+ # shellcheck source=/dev/null
+ . "$OS_RELEASE"
+ os_id=${ID:-};code=${VERSION_CODENAME:-}
+ case "$os_id:$code" in ubuntu:jammy|ubuntu:noble|ubuntu:resolute|debian:bookworm|debian:trixie) ;; *) err "$(L '自动安装 WARP 仅支持当前官方 Ubuntu/Debian 版本' 'Automatic WARP install requires a currently supported Ubuntu/Debian release')"; return 1;; esac
+ for tmp in "$WARP_REPO_FILE" "$WARP_KEY_FILE"; do
+  [[ ! -e $tmp && ! -L $tmp ]] || { err "$(L 'WARP 软件源文件已存在，拒绝覆盖' 'WARP repository file exists; refusing overwrite')"; return 1; }
+ done
+ say 'WARP 连接 Cloudflare；请阅读条款 https://www.cloudflare.com/application/terms/ 。不会切换系统默认路由。' 'WARP connects to Cloudflare. Terms: https://www.cloudflare.com/application/terms/ . System default routes are not switched.'
+ confirm "$(L '安装官方客户端并注册、接受 WARP 服务条款？' 'Install/register the official client and accept WARP terms?')" || return 0
+ prompt_read "$(L '本机代理端口 [40000]：' 'Local proxy port [40000]: ')" port || return 0; port=${port:-40000}
+ valid_port "$port" && ((10#$port>=1024)) || return 1; port=$((10#$port))
+ if ss -H -ltn "( sport = :$port )" | grep -q .; then err "$(L '端口已被占用' 'Port already occupied')"; return 1; fi
+ apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg || return 1
+ tmp=$(mktemp -d "$BASE/warp-install.XXXXXX") || return 1
+ if ! curl -q -fsSL --proto '=https' --max-time 30 https://pkg.cloudflareclient.com/pubkey.gpg -o "$tmp/key" ||
+    ! gpg --batch --yes --dearmor --output "$tmp/keyring" "$tmp/key"; then rm -rf "$tmp"; return 1; fi
+ command install -m 644 "$tmp/keyring" "$WARP_KEY_FILE" || { rm -rf "$tmp"; return 1; }
+ printf 'deb [signed-by=%s] https://pkg.cloudflareclient.com/ %s main\n' "$WARP_KEY_FILE" "$code" > "$WARP_REPO_FILE"
+ chmod 644 "$WARP_REPO_FILE"; rm -rf "$tmp"
+ apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y cloudflare-warp || return 1
+ systemctl enable --now warp-svc.service || return 1
+ if warp-cli --accept-tos registration show >/dev/null 2>&1; then err "$(L '发现已有 WARP 注册信息，保留不修改；请手动配置本机代理' 'Existing WARP registration found; retained. Configure a local proxy manually.')"; return 1; fi
+ warp-cli --accept-tos registration new >/dev/null && warp-cli --accept-tos mode proxy && warp-cli --accept-tos proxy port "$port" && warp-cli --accept-tos connect || return 1
+ registration=$(warp-cli --accept-tos registration show | sha256sum | awk '{print $1}') || return 1
+ python3 - "$BASE/warp-client.json" "$port" "$registration" <<'PY_CLIENT_OWNER'
+import json,os,sys,tempfile
+fd,tmp=tempfile.mkstemp(dir=os.path.dirname(sys.argv[1]))
+with os.fdopen(fd,'w') as f:json.dump({'owner':'SKYBYTE WARP client v1','port':int(sys.argv[2]),'registration_hash':sys.argv[3]},f)
+os.replace(tmp,sys.argv[1])
+PY_CLIENT_OWNER
+ sleep 2; warp_loopback "$port" && warp_verify "$port" || return 1
+ local udp domains
+ udp=$(warp_proxy_capability "$port") || return 1; domains=$(warp_engine defaults) || return 1
+ warp_switch restricted "$port" "$udp" "$domains"
+}
+warp_import_gateway(){
+ check_owned && warp_guard || return 1
+ local profile port saved active=false udp=true domains
+ prompt_read "$(L '已有 WARP WireGuard 配置路径（私密文件）：' 'Existing WARP WireGuard profile path (private): ')" profile || return 0
+ [[ -f $profile && ! -L $profile ]] || return 1
+ prompt_read "$(L '共享本机代理端口 [40000]：' 'Shared local proxy port [40000]: ')" port || return 0; port=${port:-40000}
+ valid_port "$port" && ((10#$port>=1024)) || return 1; port=$((10#$port))
+ confirm "$(L '导入私密配置并建立共享 WARP 网关？已有网关会短暂重启。' 'Import private profile and create shared WARP gateway? Existing gateway briefly restarts.')" || return 0
+ saved=$(mktemp -d "$BASE/warp-import.XXXXXX") || return 1
+ if [[ -f $BASE/warp-gateway.json ]]; then cp "$BASE/warp-gateway.json" "$saved/gateway.json" || return 1; fi
+ if [[ -f $SYSTEMD_DIR/skybyte-warp-gateway.service ]]; then cp "$SYSTEMD_DIR/skybyte-warp-gateway.service" "$saved/unit" || return 1; fi
+ if systemctl is-active --quiet skybyte-warp-gateway.service; then active=true; fi
+ if ss -H -ltn "( sport = :$port )" | grep -q .; then
+  if [[ $active != true ]] || [[ $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["inbounds"][0]["listen_port"])' "$BASE/warp-gateway.json") != "$port" ]]; then rm -rf "$saved";err "$(L '代理端口已被占用' 'Proxy port occupied')";return 1;fi
+ fi
+ if ! warp_engine gateway "$profile" "$port"; then rm -rf "$saved"; return 1; fi
+ if [[ $active == true ]]; then if ! systemctl stop skybyte-warp-gateway.service; then cp "$saved/gateway.json" "$BASE/warp-gateway.json";rm -rf "$saved";return 1;fi;fi
+ cat >"$SYSTEMD_DIR/skybyte-warp-gateway.service" <<UNIT
+[Unit]
+Description=SKYBYTE managed WARP gateway
+After=network-online.target
+Wants=network-online.target
+[Service]
+ExecStart=$BIN run -c $BASE/warp-gateway.json
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=1048576
+UMask=0077
+[Install]
+WantedBy=multi-user.target
+UNIT
+ if ! systemctl daemon-reload || ! systemctl enable --now skybyte-warp-gateway.service || ! { sleep 2; warp_loopback "$port" && warp_verify "$port"; }; then
+  systemctl stop skybyte-warp-gateway.service || :
+  if [[ -f $saved/gateway.json ]]; then cp "$saved/gateway.json" "$BASE/warp-gateway.json"; else rm -f "$BASE/warp-gateway.json"; fi
+  if [[ -f $saved/unit ]]; then cp "$saved/unit" "$SYSTEMD_DIR/skybyte-warp-gateway.service"; else systemctl disable skybyte-warp-gateway.service || :; rm -f "$SYSTEMD_DIR/skybyte-warp-gateway.service"; fi
+  systemctl daemon-reload || :; [[ $active != true ]] || systemctl start skybyte-warp-gateway.service || :
+  rm -rf "$saved"; err "$(L '网关验证失败，已恢复此前网关' 'Gateway verification failed; previous gateway restored')"; return 1
+ fi
+ rm -rf "$saved"; domains=$(warp_engine defaults) || return 1
+ warp_switch restricted "$port" "$udp" "$domains"
+}
+warp_dualstack(){
+ local port trace family ips ip
+ port=$(warp_engine port) && warp_verify "$port" || return 1
+ say '测试 WARP 的 IPv4/IPv6 TCP 出口，不代表系统全局双栈或平台解锁。' 'Tests WARP IPv4/IPv6 TCP egress, not system-wide dual-stack or service unlocking.'
+ for family in A AAAA; do
+  ips=$(curl -q -fsSL --noproxy '*' --max-time 12 --proto '=https' "https://cloudflare-dns.com/dns-query?name=www.cloudflare.com&type=$family" -H 'accept: application/dns-json' | python3 -c 'import ipaddress,json,sys; kind=1 if sys.argv[1]=="A" else 28; print("\n".join(str(ipaddress.ip_address(a["data"])) for a in json.load(sys.stdin).get("Answer",[]) if a.get("type")==kind and ipaddress.ip_address(a["data"]).is_global))' "$family") || { warn "$(L 'DNS 查询失败，能力未知' 'DNS query failed; capability unknown')"; continue; }
+  ip=${ips%%$'\n'*}; [[ -n $ip ]] || { warn "$family: $(L '无目标地址' 'No target address')"; continue; }
+  if [[ $family == AAAA ]]; then ip="[$ip]"; fi
+  trace=$(curl -q -fsSL --noproxy '' --proxy "socks5h://127.0.0.1:$port" --proto '=https' --max-time 12 --max-filesize 65536 --connect-to "www.cloudflare.com:443:$ip:443" https://www.cloudflare.com/cdn-cgi/trace) || { warn "$family: $(L '连接失败，能力未验证' 'Connection failed; capability unverified')"; continue; }
+  if printf '%s\n' "$trace" | python3 -c 'import ipaddress,sys; d=dict(line.strip().split("=",1) for line in sys.stdin if "=" in line); family=4 if sys.argv[1]=="A" else 6; sys.exit(0 if d.get("warp") in ("on","plus") and ipaddress.ip_address(d["ip"]).version==family else 1)' "$family"; then ok "$family: $(L 'WARP 出口通过' 'WARP egress passed')"; else warn "$family: $(L '未验证为 WARP 出口' 'Not verified as WARP egress')"; fi
+ done
+}
+warp_remove(){
+ warp_guard || return 1
+ if [[ -f $SYSTEMD_DIR/skybyte-warp-gateway.service ]]; then systemctl disable --now skybyte-warp-gateway.service || return 1; rm -f "$SYSTEMD_DIR/skybyte-warp-gateway.service"; fi
+ if [[ -f $BASE/warp-client.json ]] && command -v warp-cli >/dev/null; then
+  local current expected
+  current=$(warp-cli --accept-tos registration show | sha256sum | awk '{print $1}') || current=''
+  expected=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["owner"]=="SKYBYTE WARP client v1"; print(d["registration_hash"])' "$BASE/warp-client.json") || return 1
+  if [[ -n $current && $current == "$expected" ]]; then warp-cli --accept-tos disconnect || return 1; else warn "$(L 'WARP 注册已改变，保留客户端连接' 'WARP registration changed; client connection retained')"; fi
+ fi
+ rm -f "$BASE/warp-state.json" "$BASE/warp-gateway.json" "$BASE/warp-client.json"
+}
+warp_restore_snapshot(){
+ local path=$1 active=false
+ warp_guard || return 1
+ if [[ -f $SYSTEMD_DIR/skybyte-warp-gateway.service ]] && systemctl is-active --quiet skybyte-warp-gateway.service; then active=true; systemctl stop skybyte-warp-gateway.service || return 1; fi
+ warp_engine restore "$path" || return 1
+ if [[ -f $path/warp-gateway.json ]]; then
+  [[ -f $path/warp-gateway.unit && ! -L $path/warp-gateway.json && ! -L $path/warp-gateway.unit ]] || return 1
+  grep -Fxq 'Description=SKYBYTE managed WARP gateway' "$path/warp-gateway.unit" && grep -Fxq "ExecStart=$BIN run -c $BASE/warp-gateway.json" "$path/warp-gateway.unit" || return 1
+  "$BIN" check -c "$path/warp-gateway.json" || return 1
+  cp "$path/warp-gateway.json" "$BASE/warp-gateway.json" && cp "$path/warp-gateway.unit" "$SYSTEMD_DIR/skybyte-warp-gateway.service" || return 1
+  systemctl daemon-reload || return 1
+  if [[ $active == true || ( -f $path/warp-gateway-active && $(cat "$path/warp-gateway-active") == true ) ]]; then systemctl enable --now skybyte-warp-gateway.service || return 1; fi
+ elif [[ -f $SYSTEMD_DIR/skybyte-warp-gateway.service ]]; then
+  systemctl disable --now skybyte-warp-gateway.service || return 1
+  rm -f "$SYSTEMD_DIR/skybyte-warp-gateway.service" "$BASE/warp-gateway.json";systemctl daemon-reload || return 1
+ fi
+}
+warp_reconcile(){
+ [[ -f $BASE/warp-state.json ]] || return 0
+ local settings mode port udp domains
+ settings=$(python3 - "$BASE/warp-state.json" <<'PY_WARP_SETTINGS'
+import json,sys
+s=json.load(open(sys.argv[1]));print(s['mode']);print(s['port']);print(str(s['udp']).lower());print(' '.join(s['domains']))
+PY_WARP_SETTINGS
+ ) || return 1
+ { IFS= read -r mode; IFS= read -r port; IFS= read -r udp; IFS= read -r domains; } <<<"$settings"
+ warp_engine switch "$mode" "$port" "$udp" "$domains"
+}
+
+warp_menu(){
+ check_owned && warp_guard || return 1
+ local choice port udp domains mode
+ warp_engine status
+ prompt_options '1 安装官方 WARP  2 使用现有本机代理  3 导入 WireGuard 配置  4 切换分流  5 双栈检测  6 流媒体检测  0 返回' '1 Install official WARP  2 Existing local proxy  3 Import WireGuard profile  4 Routing mode  5 Dual-stack tests  6 Media tests  0 Back'
+ prompt_read '> ' choice || return 0
+ case $choice in
+  1) warp_install_client;; 3) warp_import_gateway;; 5) warp_dualstack;; 6) media_check;;
+  2)
+   prompt_read "$(L '已有本机 WARP SOCKS5 端口 [40000]：' 'Existing local WARP SOCKS5 port [40000]: ')" port || return 0; port=${port:-40000}
+   valid_port "$port" && warp_loopback "$port" && warp_verify "$port" || return 1
+   udp=$(warp_proxy_capability "$port") || return 1; domains=$(warp_engine defaults) || return 1
+   confirm "$(L '仅流媒体和 AI 域名使用此 WARP 出站？' 'Route only media/AI domains through this WARP proxy?')" && warp_switch restricted "$port" "$udp" "$domains";;
+  4)
+   port=$(warp_engine port) || return 1
+   udp=$(python3 -c 'import json,sys; print(str(json.load(open(sys.argv[1]))["udp"]).lower())' "$BASE/warp-state.json") || return 1
+   prompt_options '1 全局直连  2 全局 WARP  3 仅受限域名 WARP' '1 Direct  2 Global WARP  3 Restricted domains only'
+   prompt_read '> ' mode || return 0
+   case $mode in 1) mode=direct;; 2) mode=global;; 3) mode=restricted;; *) return 1;; esac
+   domains=$(warp_engine defaults) || return 1
+   if [[ $mode == restricted ]]; then
+    prompt_read "$(L '域名后缀列表（空格分隔；回车默认流媒体＋AI）：' 'Domain suffixes (space-separated; Enter for media + AI): ')" choice || return 0
+    domains=${choice:-$domains}
+   fi
+   if [[ $udp != true && $mode != direct ]]; then warn "$(L '此代理未支持 UDP：对应 UDP 流量会拒绝，允许应用回退 TCP。HY2 入站传输不受影响。' 'Proxy lacks UDP support: matching UDP is rejected for TCP fallback. HY2 inbound transport is unaffected.')"; fi
+   confirm "$(L '应用出站模式并短暂重启运行中的节点？' 'Apply routing and briefly restart active nodes?')" && warp_switch "$mode" "$port" "$udp" "$domains";;
+  0) return 0;; *) return 1;;
+ esac
+}
+
 manager_self_check(){
  python3 - "$SCRIPT_PATH" <<'PY_SELF_CHECK'
 import pathlib,re,sys
@@ -2077,18 +2734,16 @@ sub_menu(){
    say ' 4. 启用 BBR + FQ' ' 4. Enable BBR + FQ'
    say ' 5. HY2 端口跳跃' ' 5. HY2 port hopping'
    say ' 6. VPS 流量统计（vnStat）' ' 6. VPS traffic (vnStat)'
-   say ' 7. IP 信息' ' 7. IP information'
-   say ' 8. 基础网络诊断' ' 8. Basic network checks'
-   say ' 9. HY2 / 小火箭连接诊断' ' 9. HY2 / Shadowrocket checks'
-   prompt_options '10. 进程、内存与负载' '10. Processes, memory and load'
+   say ' 7. 进程、内存与负载' ' 7. Processes, memory and load'
+   say ' 8. 流媒体可用性检测' ' 8. Streaming availability tests'
+   say ' 9. WARP 出站与分流' ' 9. WARP egress and routing'
    ;;
   5)
    say ' 1. 手动更新 sing-box' ' 1. Update sing-box'
-   say ' 2. 每周自动更新' ' 2. Weekly automatic updates'
-   say ' 3. 备份配置' ' 3. Back up configuration'
-   say ' 4. 恢复配置' ' 4. Restore configuration'
-   say ' 5. 检查 / 更新 SKYBYTE Manager 管理脚本' ' 5. Check / update SKYBYTE Manager script'
-   say ' 6. HY2 证书检查与续签重载' ' 6. HY2 certificate checks and renewal reload'
+   say ' 2. 备份配置' ' 2. Back up configuration'
+   say ' 3. 恢复配置' ' 3. Restore configuration'
+   say ' 4. 检查 / 更新 SKYBYTE Manager 管理脚本' ' 4. Check / update SKYBYTE Manager script'
+   say ' 5. HY2 证书检查与续签重载' ' 5. HY2 certificate checks and renewal reload'
    ;;
   6)
    say ' 1. 切换语言' ' 1. Change language'
@@ -2118,16 +2773,14 @@ sub_menu(){
   4:4) MAIN_ACTION=bbr;;
   4:5) MAIN_ACTION=hop;;
   4:6) MAIN_ACTION=traffic;;
-  4:7) MAIN_ACTION=ip;;
-  4:8) MAIN_ACTION=network;;
-  4:9) MAIN_ACTION=hy2_check;;
-  4:10) MAIN_ACTION=resources;;
+  4:7) MAIN_ACTION=resources;;
+  4:8) MAIN_ACTION=media;;
+  4:9) MAIN_ACTION=warp;;
   5:1) MAIN_ACTION=update;;
-  5:2) MAIN_ACTION=auto;;
-  5:3) MAIN_ACTION=backup;;
-  5:4) MAIN_ACTION=restore;;
-  5:5) MAIN_ACTION=manager_update;;
-  5:6) MAIN_ACTION=certificate;;
+  5:2) MAIN_ACTION=backup;;
+  5:3) MAIN_ACTION=restore;;
+  5:4) MAIN_ACTION=manager_update;;
+  5:5) MAIN_ACTION=certificate;;
   6:1) MAIN_ACTION=language;;
   6:2) MAIN_ACTION=notice;;
   6:3) MAIN_ACTION=uninstall;;
@@ -2140,15 +2793,16 @@ dispatch_action(){
  argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;; qr) shadowrocket_qr;; users) users_manager;;
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
- ip) ipcheck;; network) netcheck;; hy2_check) hy2_diagnostics;;
+ media) media_check;; warp) warp_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
- update) update;; auto) configure_auto;; backup) backup;; restore) restore;;
+ update) update;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;
  esac
 }
 main(){
  need_root; require_cmd flock
  local group action_status
+ retire_auto_update || return 1
  startup_info
  while :; do
   printf '%s\n==============================================\n' "$CYAN"
@@ -2164,7 +2818,7 @@ main(){
 LOGO
   printf '==============================================%s\n' "$RESET"
   printf '%s' "$GREEN"
-  say ' 1. 协议安装与 Argo 隧道' ' 1. Protocol installation and Argo tunnels'
+  say ' 1. 节点安装' ' 1. Install nodes'
   say ' 2. 节点与订阅' ' 2. Nodes and subscriptions'
   say ' 3. 服务与日志' ' 3. Services and logs'
   say ' 4. 服务器与网络' ' 4. Server and network'
@@ -2175,6 +2829,7 @@ LOGO
   say ' 0. 退出' ' 0. Exit'
   printf '%s' "$RESET"
   printf '%sYouTube: %s%s\n' "$CYAN" "$YOUTUBE" "$RESET"
+  printf '%s%s%s\n' "$CYAN" "$(L '如果这个脚本对你有帮助，欢迎订阅我的 YouTube 频道，支持 SKYBYTE 持续更新！' "If you find this script helpful, please subscribe to my YouTube channel and support SKYBYTE's continued development!")" "$RESET"
   prompt_read "$(L '请选择：' 'Select: ')" group || return 0
   [[ $group != 0 ]] || return 0
   case $group in 7) MAIN_ACTION=users;; 1|2|3|4|5|6) sub_menu "$group" || return 0;; *) err "$(L '无效选项' 'Invalid choice')"; continue;; esac

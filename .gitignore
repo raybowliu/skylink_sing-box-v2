@@ -28,3 +28,10 @@ users.json
 users/
 users.lock
 users-worker.lock
+
+warp-state.json
+warp-gateway.json
+warp-client.json
+warp-profile.conf
+wgcf-account.toml
+wgcf-profile.conf

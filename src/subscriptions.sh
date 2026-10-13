@@ -28,8 +28,9 @@ if mode!='1' and self_signed:
  import hashlib,ssl
  cert_pem=open(s['cert_path']).read()
  fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
-v='vless://{}@{}:{}?{}#{}'.format(s.get('uuid',''),ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}),urllib.parse.quote(reality_name,safe=''))
-h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))),urllib.parse.quote(hy2_name,safe=''))
+authority_ip='['+ip+']' if ':' in ip else ip
+v='vless://{}@{}:{}?{}#{}'.format(s.get('uuid',''),authority_ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}),urllib.parse.quote(reality_name,safe=''))
+h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),authority_ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))),urllib.parse.quote(hy2_name,safe=''))
 links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
 link_names=[reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
 argo=None;argo_note=None;argo_name=node_name+'-Argo'
@@ -165,7 +166,7 @@ if mode!='1' and self_signed:
  else:
   notes.append(tr('当前证书不是 CA 证书，不能生成 iOS 根证书描述文件；使用客户端支持的自定义信任或受信任 CA 证书。','This certificate is not a CA; no iOS root profile is generated. Use supported client custom trust or a trusted CA certificate.'))
  notes += [tr('保留 TLS 验证；不要仅为连接而打开跳过验证。不要传输服务端私钥。','Keep TLS verification enabled. Do not enable skip verification just to connect. Never transfer the server private key.'),
-           tr('仍失败时运行服务器与网络 → HY2 诊断（4 → 9）；服务运行、证书信任与 UDP 可达需要分别检查。','If connection fails, run Server and network > HY2 checks (4 > 9); service health, certificate trust and UDP reachability are separate checks.')]
+           tr('仍失败时检查服务状态、证书信任、本机 UDP 监听和云防火墙；这些需要分别确认。','If connection fails, inspect service health, certificate trust, the UDP listener and provider firewall separately.')]
 if s.get('hop'):notes.append(tr('端口跳跃需客户端支持，并放行本机和云防火墙 UDP 范围；普通 URI 不包含跳跃范围。','Hopping requires client support and local/provider UDP range rules; basic URIs do not include the range.'))
 write('subscription-notes.txt','\n'.join(notes or [tr('导入前核实客户端协议支持。','Check client protocol support before importing.')])+'\n')
 color=sys.stdout.isatty() and not os.getenv('NO_COLOR')
@@ -205,9 +206,3 @@ PY
 bbr(){ need_root; confirm "$(L '更改系统 TCP 拥塞控制为 BBR、默认队列为 FQ？' 'Change system TCP congestion control to BBR and default qdisc to FQ?')" || return 0; modprobe tcp_bbr 2>/dev/null || :; if ! sysctl -n net.ipv4.tcp_available_congestion_control | grep -qw bbr; then err "$(L '内核不支持 BBR' 'Kernel does not support BBR')"; return 1; fi
  printf 'net.core.default_qdisc = fq\nnet.ipv4.tcp_congestion_control = bbr\n' >"$SYSCTL_FILE"
  sysctl -p "$SYSCTL_FILE"; sysctl net.ipv4.tcp_congestion_control net.core.default_qdisc; }
-hop_disable(){ nft delete table ip singbox_v2_hop 2>/dev/null || :; if [[ -f $META ]]; then python3 - "$META" <<'PY'
-import json,sys
-p=sys.argv[1];d=json.load(open(p));d['hop']=False
-with open(p,'w') as f:json.dump(d,f,indent=2)
-PY
- fi; say '已关闭本工具管理的端口跳跃规则' 'Disabled managed port-hopping rules'; }
