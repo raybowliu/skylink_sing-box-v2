@@ -45,6 +45,7 @@ sub_menu(){
    say ' 8. 流媒体可用性检测' ' 8. Streaming availability tests'
    say ' 9. WARP 出站与分流' ' 9. WARP egress and routing'
    say '10. 住宅落地 / VPS 中转' '10. Residential landing / VPS relay'
+   say '11. HAProxy TCP 透传' '11. HAProxy TCP passthrough'
    ;;
   5)
    say ' 1. 手动更新 sing-box' ' 1. Update sing-box'
@@ -90,6 +91,7 @@ sub_menu(){
   4:8) MAIN_ACTION=media;;
   4:9) MAIN_ACTION=warp;;
   4:10) MAIN_ACTION=relay;;
+  4:11) MAIN_ACTION=haproxy;;
   5:1) MAIN_ACTION=update;;
   5:2) MAIN_ACTION=backup;;
   5:3) MAIN_ACTION=restore;;
@@ -110,7 +112,7 @@ dispatch_action(){
  argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;; qr) shadowrocket_qr;; users) users_manager;;
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
- media) media_check;; warp) warp_menu;; relay) relay_menu;;
+ media) media_check;; warp) warp_menu;; relay) relay_menu;; haproxy) haproxy_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
  update) core_versions;; settings) node_settings;; online) online_menu;; acme) acme_menu;; backup_tools) backup_tools;; help) usage_help;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;

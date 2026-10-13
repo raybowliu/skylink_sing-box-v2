@@ -232,6 +232,13 @@ with lock():
   uid=secrets.token_hex(8);p=userdir(uid);p.mkdir(mode=0o700)
   try:
    used={u[k] for u in d['users'] for k in ['port','api_port']}
+   relay_file=base/'haproxy/state.json'
+   if relay_file.exists() or relay_file.is_symlink():
+    require(not relay_file.is_symlink() and not relay_file.parent.is_symlink() and relay_file.stat().st_size<=131072)
+    relay=json.loads(relay_file.read_text());require(relay.get('owner')=='SKYBYTE HAProxy TCP v1' and relay.get('schema')==1)
+    require(isinstance(relay.get('rules'),list) and len(relay['rules'])<=16)
+    for rule in relay['rules']:
+     require(type(rule.get('port'))==int and 1<=rule['port']<=65535);used.add(rule['port'])
    if metadata.get('hop'):used.update(range(int(metadata['hop_start']),int(metadata['hop_end'])+1))
    port=available_port(used);controller=available_port(used,True)
    identity=str(uuid.uuid4());password=secrets.token_urlsafe(32);token=secrets.token_urlsafe(32)

@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.6.2
+MANAGER_VERSION=2.7.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -24,6 +24,8 @@ BIN=/usr/local/bin/sing-box
 LOCK=/run/singbox-v2.lock
 WARP_REPO_FILE=/etc/apt/sources.list.d/skybyte-cloudflare-warp.list
 WARP_KEY_FILE=/usr/share/keyrings/skybyte-cloudflare-warp.gpg
+HAPROXY_BIN=/usr/sbin/haproxy
+HAPROXY_RUNTIME_DIR=/run/systemd/system
 
 # Language preference is independent of sing-box configuration.
 LANG_FILE="$BASE/language.conf"
@@ -72,7 +74,7 @@ startup_service_info(){
  printf '  %s: %s\n' "$label" "$value"
 }
 startup_info(){
- local os kernel arch virtual ipv4 ipv6 sb=false argo=false nginx=false users=false cert_info
+ local os kernel arch virtual ipv4 ipv6 sb=false argo=false nginx=false users=false hp=false cert_info
  # shellcheck disable=SC1090
  os=$( ( . "$OS_RELEASE"; printf '%s' "${PRETTY_NAME:-${ID:-}}" ) 2>/dev/null) || os=''
  os=${os:-$(L '未知' 'Unknown')}
@@ -91,13 +93,15 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：住宅落地 / VPS 中转（4 → 10）、在线订阅、ACME 与备份加密' 'Features: residential landing / VPS relay (4 → 10), HTTPS subscriptions, ACME and encrypted backups'
+ say '功能更新：HAProxy TCP 透传（4 → 11）、住宅落地中转、在线订阅、ACME 与备份加密' 'Features: HAProxy TCP passthrough (4 → 11), residential relay, HTTPS subscriptions, ACME and encrypted backups'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
  startup_service_info sing-box "$sb" sing-box.service
  startup_service_info Argo "$argo" skybyte-argo-tunnel.service
  startup_service_info Nginx "$nginx" nginx.service
+ [[ ! -d $BASE/haproxy ]] || hp=true
+ startup_service_info 'HAProxy TCP' "$hp" skybyte-haproxy.service
  [[ ! -f $BASE/users.json ]] || users=true
  startup_service_info "$(L '用户配额服务' 'User quota supervisor')" "$users" skybyte-users.service
  say 'IP 为本机网卡地址，可能与公网出口不同。' 'IPs are local interface addresses; they may differ from public egress.'
@@ -139,7 +143,7 @@ check_owned(){ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本�
 backup(){
  check_owned || return 1
  local path file
- users_guard && warp_guard && acme_guard && online_guard || return 1
+ users_guard && warp_guard && acme_guard && online_guard && haproxy_guard || return 1
  path="$BACKUP/$(date +%Y%m%d-%H%M%S)-$RANDOM"
  mkdir -m 700 "$path" || return 1; cp -a "$(dirname "$CONF")" "$path/config" || return 1
  cp "$META" "$path/state.json" || return 1
@@ -180,6 +184,7 @@ PY_SUB_BACKUP
   if [[ -f $SYSTEMD_DIR/skybyte-subscriptions.service ]];then cp "$SYSTEMD_DIR/skybyte-subscriptions.service" "$path/subscriptions.unit" || return 1;fi
   if systemctl is-active --quiet skybyte-subscriptions.service;then echo true > "$path/subscriptions.active";else echo false > "$path/subscriptions.active";fi
  fi
+ if [[ -d $BASE/haproxy ]];then haproxy_engine backup "$path/haproxy" >/dev/null || return 1;fi
  backup_engine manifest "$path" || return 1
  chmod -R go-rwx "$path" || return 1; printf '%s\n' "$path"
 }
@@ -302,6 +307,7 @@ install_protocol() (
  if [[ -e $CONF || -L $CONF || -e $META || -L $META || -e $BIN || -L $BIN || -e $SYSTEMD_DIR/sing-box.service || -L $SYSTEMD_DIR/sing-box.service ]] || command -v sing-box >/dev/null; then err "$(L '发现已有配置，拒绝覆盖' 'Existing configuration or binary found; refusing to overwrite')"; return 1; fi
  if systemctl list-unit-files sing-box.service --no-legend 2>/dev/null | grep -q sing-box; then err "$(L '已有 sing-box 服务，拒绝覆盖' 'Existing sing-box service found; refusing to overwrite')"; return 1; fi
  require_cmd ss || { apt-get update && apt-get install -y iproute2 || return 1; }
+ if [[ $mode != 2 ]];then haproxy_engine check_port 443 || return 1;fi
  if [[ $mode != 2 ]] && ss -H -ltn '( sport = :443 )' | grep -q .; then err "$(L 'TCP 443 已被占用' 'TCP 443 is occupied')"; return 1; fi
  if [[ $mode != 1 ]] && ss -H -lun '( sport = :443 )' | grep -q .; then err "$(L 'UDP 443 已被占用' 'UDP 443 is occupied')"; return 1; fi
  local domain="" cert="" key="" sni="" node_name
@@ -520,6 +526,7 @@ restore(){
  argo_guard || return 1
  users_guard || return 1
  backup_engine preflight "$path" || return 1
+ haproxy_engine check_configs "$path" || return 1
  snap=$(backup) || return 1
  users_stop || return 1
  cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
@@ -803,6 +810,7 @@ argo_install(){
  confirm "$(L '安装所选 Argo 模式？' 'Install selected Argo mode?')" || return 0
  prompt_read "$(L '本机 WS 端口 [8080]：' 'Local WS port [8080]: ')" port || return 1
  port=${port:-8080}; valid_port "$port" && (( 10#$port>=1024 )) || return 1; port=$((10#$port))
+ haproxy_engine check_port "$port" || return 1
  if ss -H -ltn "( sport = :$port )" | grep -q .; then err "$(L '端口已占用' 'Port is occupied')"; return 1; fi
  name=$(choose_node_name) || return 1
  if [[ $mode == named ]]; then
@@ -967,7 +975,7 @@ argo_manager(){
 }
 
 uninstall_manager(){
- certificate_guard && warp_guard && hop_guard && acme_guard && online_guard || return 1
+ certificate_guard && warp_guard && hop_guard && acme_guard && online_guard && haproxy_guard || return 1
  users_guard || return 1
  need_root
  check_owned || return 1
@@ -1012,6 +1020,7 @@ PY
  users_stop || return 1
  if [[ -f $BASE/users.json ]]; then users_engine ledger "$snap" && backup_engine reseal "$snap" || return 1; fi
  online_remove || return 1
+ haproxy_engine purge >/dev/null || return 1
  acme_remove || return 1
  users_remove || return 1
  warp_remove || return 1
@@ -1042,6 +1051,7 @@ PY
 
 # @include warp.sh
 # @include relay.sh
+# @include haproxy.sh
 
 # @include reliability.sh
 

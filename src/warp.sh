@@ -92,6 +92,7 @@ warp_install_client(){
  confirm "$(L '安装官方客户端并注册、接受 WARP 服务条款？' 'Install/register the official client and accept WARP terms?')" || return 0
  prompt_read "$(L '本机代理端口 [40000]：' 'Local proxy port [40000]: ')" port || return 0; port=${port:-40000}
  valid_port "$port" && ((10#$port>=1024)) || return 1; port=$((10#$port))
+ haproxy_engine check_port "$port" || return 1
  if ss -H -ltn "( sport = :$port )" | grep -q .; then err "$(L '端口已被占用' 'Port already occupied')"; return 1; fi
  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg || return 1
  tmp=$(mktemp -d "$BASE/warp-install.XXXXXX") || return 1
@@ -123,6 +124,7 @@ warp_import_gateway(){
  [[ -f $profile && ! -L $profile ]] || return 1
  prompt_read "$(L '共享本机代理端口 [40000]：' 'Shared local proxy port [40000]: ')" port || return 0; port=${port:-40000}
  valid_port "$port" && ((10#$port>=1024)) || return 1; port=$((10#$port))
+ haproxy_engine check_port "$port" || return 1
  confirm "$(L '导入私密配置并建立共享 WARP 网关？已有网关会短暂重启。' 'Import private profile and create shared WARP gateway? Existing gateway briefly restarts.')" || return 0
  saved=$(mktemp -d "$BASE/warp-import.XXXXXX") || return 1
  if [[ -f $BASE/warp-gateway.json ]]; then cp "$BASE/warp-gateway.json" "$saved/gateway.json" || return 1; fi
