@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.5 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
+# SKYBYTE Manager V2.6 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
 
 **SKYBYTE Manager** 是基于 Bash 的 Ubuntu/Debian VPS 管理工具，提供简体中文和 English 界面，支持 sing-box 的 **VLESS + Reality + Vision、Hysteria2（HY2）及双协议部署**。通过交互菜单管理 Cloudflare Argo 隧道、WARP 出站分流、用户流量配额与有效期，并导出 Shadowrocket（小火箭）、v2rayN、Clash Verge/Mihomo/OpenClash 和 sing-box JSON 客户端配置。
 
@@ -17,6 +17,7 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 - [用户数量、流量与有效期](#用户数量流量与有效期)
 - [WARP 出站与双栈](#warp-出站与双栈v24)
 - [个人 HTTPS 在线订阅](#每人独立-https-在线订阅v25)
+- [住宅 IP 落地与 VPS 中转](#住宅-ip-落地与-vps-中转v26)
 - [源码模块与构建](#源码模块与构建) · [测试与范围](#测试与范围)
 - [常见问题](#常见问题) · [VPS 服务商推广链接](#vps-服务商推广链接)
 
@@ -42,7 +43,7 @@ sudo bash install.sh
 | 1 | 节点安装 | Reality / HY2 / 双协议；临时 / 固定隧道；参数修改 / 协议增删 |
 | 2 | 节点与订阅 | 节点信息 / 订阅导出 / 自定义名称 / 小火箭二维码 / 用户管理 / HTTPS个人订阅 |
 | 3 | 服务与日志 | 服务控制 / 日志 / Argo 状态 |
-| 4 | 服务器与网络 | 初始化 / UFW / 防火墙 / BBR / 跳跃 / 流量 / 资源 / 流媒体 / WARP |
+| 4 | 服务器与网络 | 初始化 / UFW / 防火墙 / BBR / 跳跃 / 流量 / 资源 / 流媒体 / WARP / 住宅落地中转 |
 | 5 | 更新与备份 | 内核版本 / 备份 / 恢复 / 管理脚本更新 / 证书管理 / ACME / 加密备份 |
 | 6 | 设置与卸载 | 语言 / 隐私声明 / 卸载 / 使用说明 |
 | 7 | 用户与配额 | 人数 / 用量 / 额度 / 有效期 / 故障诊断 / 资源 |
@@ -171,7 +172,7 @@ GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审�
 
 ## 源码模块与构建
 
-维护源码在 `src/`：`manager.sh` 为基础服务及安装逻辑，`subscriptions.sh` 为订阅导出，`users.sh` 为用户界面/服务，`users.py` 为配额与诊断，`operations.sh` 为更新/证书/资源，`menu.sh` 为主菜单及启动入口；`hopping.sh` 管理 UDP 跳跃，`media.sh`/`media.py` 检测流媒体，`warp.sh`/`warp.py` 管理 WARP 网关与分流；`configuration.sh`/`configuration.py` 编辑节点，`acme.sh` 管理证书申请，`online.sh`/`online.py` 提供HTTPS订阅，`reliability.sh`/`backup.py` 管理安装事务、版本与备份，`help.sh` 提供使用说明。运行 `python3 scripts/build.py` 生成完整 `singbox-v2.sh`；`python3 scripts/build.py --check` 检查是否同步。不要直接修改生成文件。
+维护源码在 `src/`：`manager.sh` 为基础服务及安装逻辑，`subscriptions.sh` 为订阅导出，`users.sh` 为用户界面/服务，`users.py` 为配额与诊断，`operations.sh` 为更新/证书/资源，`menu.sh` 为主菜单及启动入口；`hopping.sh` 管理 UDP 跳跃，`media.sh`/`media.py` 检测流媒体，`warp.sh`/`warp.py` 管理 WARP 网关与托管路由，`relay.sh` 提供住宅落地中转界面；`configuration.sh`/`configuration.py` 编辑节点，`acme.sh` 管理证书申请，`online.sh`/`online.py` 提供HTTPS订阅，`reliability.sh`/`backup.py` 管理安装事务、版本与备份，`help.sh` 提供使用说明。运行 `python3 scripts/build.py` 生成完整 `singbox-v2.sh`；`python3 scripts/build.py --check` 检查是否同步。不要直接修改生成文件。
 
 安装仍只需 `install.sh`，部署的脚本自带所有模块，不在运行时下载或加载额外文件。`bash singbox-v2.sh --self-check` 无需 root，可检查内嵌 Python 语法并输出版本。systemd/UFW 操作使用隔离模拟测试；实际 VPS 部署仍需验证。
 
@@ -252,7 +253,7 @@ HY2 支持上下行 Mbps、`ignore_client_bandwidth` 与 Salamander 混淆，服
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.5.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.0
 ```
 
 打包只包含安装入口、完整脚本、公开规则列表及SHA256SUMS，不发布运行时配置或凭据。
@@ -267,6 +268,26 @@ python3 scripts/package_release.py --output /tmp/skybyte-release-2.5.0
 SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
   --engine /path/to/sing-box --counts 10,30,50 --output /tmp/account-benchmark.json
 ```
+
+## 住宅 IP 落地与 VPS 中转（V2.6）
+
+入口 **4 → 10：住宅落地 / VPS 中转**。适用于住宅 IP VPS 对大陆直连较差、希望通过另一台线路较好的 VPS 接入的场景：
+
+```text
+国内客户端 → 中转 VPS（本脚本）→ 住宅 IP 落地 VPS → 目标网站
+```
+
+1. 在落地 VPS 上部署 **VLESS + Reality + Vision** 或 **Hysteria2**，确认其公网协议端口可从中转 VPS 访问。
+2. 在中转 VPS 上保留或部署客户端入口节点，通过 **4 → 10 → 1** 导入落地 URI。支持标准 VLESS/HY2 链接和本项目的小火箭 Reality 专用链接，也可导入只有一个代理出站的 sing-box JSON；不读取远程订阅或执行导入文件中的指令。
+3. HY2 自签名落地需要从可信 SSH/SFTP 通道取得公开证书，核对指纹后提供路径，或使用内嵌公开证书的 JSON。带 `pinSHA256` 的链接必须提供对应证书；拒绝 `insecure=1` 等关闭验证设置，服务端私钥不能导入。
+4. 默认选择**全部节点流量走落地**。也可选择指定域名后缀走落地，其余流量仍直连。确认后先检查配置，并经落地节点验证 HTTPS 连接和出口 IP；失败不应用，成功后备份并重启原先运行的管理员、用户及 Argo 节点。
+5. 客户端继续使用中转 VPS 原来的链接、证书、名称和二维码，网站看到落地 VPS 的最终出口。个人用户的配额、有效期和用量仍由中转 VPS 的独立账户服务管理，落地密码/UUID 不写入客户端导出或个人订阅。
+
+菜单还提供落地连接测试、全局中转、恢复直连和删除保存的落地凭据。**落地连接失败不会自动切换成中转 VPS 自身出口**；选择指定域名模式时，未匹配流量按设置直连。主动恢复直连后网站会看到中转 VPS 的出口 IP。中转与 WARP 为两种可切换的出站策略，启用其中一种会替换另一种的活动分流；不叠加 WARP，也不新增通用 SOCKS5/HTTP 前置代理配置。
+
+复用现有 sing-box 核心，不新增公网代理监听或独立中转守护进程。导入内容采用字段白名单，不覆盖未知自定义路由；明显指向本 VPS 托管监听端口的回环配置会被拒绝。落地凭据与公开信任证书私密保存在托管路由状态及备份中，更新、恢复和卸载沿用现有管理流程。使用同机域名别名、外部转发或多台 VPS 时，请自行确认没有转发循环。
+
+**速度取决于两段链路的时延、丢包和带宽，以及两台 VPS 的 CPU 与住宅线路上行能力。** 中转不能消除落地链路的瓶颈；请对比直连和中转的实际下载、上传及延迟。内置检查验证 TCP/HTTPS 可达，不证明住宅 IP 分类、流媒体解锁、UDP 公网可达或速度提升。两台 VPS 都可能产生流量费用。协议字段参考 [sing-box VLESS](https://sing-box.sagernet.org/configuration/outbound/vless/) 与 [sing-box Hysteria2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)。
 
 ## 常见问题
 

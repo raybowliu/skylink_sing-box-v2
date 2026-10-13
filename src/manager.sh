@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.5.0
+MANAGER_VERSION=2.6.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -91,7 +91,7 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：在线订阅、ACME、节点修改、版本管理与备份加密' 'Features: HTTPS subscriptions, ACME, node edits, core versions and encrypted backups'
+ say '功能更新：住宅落地 / VPS 中转（4 → 10）、在线订阅、ACME 与备份加密' 'Features: residential landing / VPS relay (4 → 10), HTTPS subscriptions, ACME and encrypted backups'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
@@ -1041,6 +1041,7 @@ PY
 # @include media.sh
 
 # @include warp.sh
+# @include relay.sh
 
 # @include reliability.sh
 

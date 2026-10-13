@@ -199,14 +199,7 @@ warp_restore_snapshot(){
 }
 warp_reconcile(){
  [[ -f $BASE/warp-state.json ]] || return 0
- local settings mode port udp domains
- settings=$(python3 - "$BASE/warp-state.json" <<'PY_WARP_SETTINGS'
-import json,sys
-s=json.load(open(sys.argv[1]));print(s['mode']);print(s['port']);print(str(s['udp']).lower());print(' '.join(s['domains']))
-PY_WARP_SETTINGS
- ) || return 1
- { IFS= read -r mode; IFS= read -r port; IFS= read -r udp; IFS= read -r domains; } <<<"$settings"
- warp_engine switch "$mode" "$port" "$udp" "$domains"
+ warp_engine reconcile
 }
 
 warp_menu(){

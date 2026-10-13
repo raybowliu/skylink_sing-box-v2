@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import re
 import shlex
 import signal
 import socket
@@ -20,6 +21,7 @@ import unittest
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
+VERSION = re.search(r'^MANAGER_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$', (ROOT/'src/manager.sh').read_text(), re.M)[1]
 BASH = os.environ.get('BASH_BIN', 'bash')
 SB = os.environ.get('SING_BOX_BIN')
 MIHOMO = os.environ.get('MIHOMO_BIN')
@@ -381,7 +383,7 @@ printf '%s' "$SSH_PORTS"''')
         for language, text in [('en_US','Nodes and subscriptions'), ('zh_CN','节点与订阅')]:
             result = self.shell('need_root(){ :; }; flock(){ :; }; LANGUAGE_CHOICE='+language+'; main', input='0\n')
             self.assertIn('███████╗', result.stdout)
-            self.assertIn('SKYBYTE Manager v2.5.0', result.stdout)
+            self.assertIn('SKYBYTE Manager v'+VERSION, result.stdout)
             self.assertIn('https://www.youtube.com/@SKYBYTE9119', result.stdout)
             self.assertIn(text, result.stdout)
 
