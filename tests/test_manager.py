@@ -679,6 +679,123 @@ argo_install quick'''
         self.assertNotEqual(self.shell(code,input='yes\n',ok=False).returncode,0)
         self.assertEqual(before,(self.base/'argo-state.json').read_bytes())
 
+    def test_standalone_argo_bootstrap_uses_private_empty_core_and_creates_missing_base(self):
+        self.base=self.root/'new-manager-base'
+        self.bin=self.root/'new-sing-box'
+        self.assertFalse(self.base.exists())
+        code='''need_root(){ :; }
+rescue_dependencies(){ :; }
+download_binary(){ printf '#!/bin/sh\\nexit 0\\n' > "$2"; chmod 700 "$2"; }
+setup_service(){ printf 'Description=sing-box (managed by singbox-v2)\\nExecStart=%s run -c %s\\n' "$BIN" "$CONF" > "$SYSTEMD_DIR/sing-box.service"; }
+systemctl(){ if [[ $1 == list-unit-files ]]; then return 1; fi; printf 'SYSTEMCTL %s\\n' "$*"; }
+confirm(){ return 0; }
+rescue_bootstrap_core'''
+        result=self.shell(code)
+        state=json.loads((self.base/'state.json').read_text())
+        config=json.loads((self.config/'config.json').read_text())
+        self.assertEqual(state['deployment'],'argo-only')
+        self.assertEqual(config['inbounds'],[])
+        self.assertEqual(self.base.stat().st_mode&0o777,0o700)
+        self.assertEqual((self.base/'state.json').stat().st_mode&0o777,0o600)
+        self.assertIn('SYSTEMCTL disable --now sing-box.service',result.stdout)
+        self.assertFalse(any(p.name.startswith('install.') for p in self.base.iterdir()))
+
+    def test_argo_only_can_be_extended_with_a_direct_ipv6_reality_node(self):
+        config={'log':{'level':'warn'},'inbounds':[],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
+        (self.config/'config.json').write_text(json.dumps(config))
+        state={'deployment':'argo-only','mode':'0','node_name':'SKYBYTE','ip':'127.0.0.1','listen':'::','hop':False}
+        (self.base/'state.json').write_text(json.dumps(state))
+        argo={'mode':'quick','domain':'test-route.trycloudflare.com','connected':True}
+        (self.base/'argo-state.json').write_text(json.dumps(argo))
+        argo_config={'inbounds':[{'type':'vless','listen':'127.0.0.1','listen_port':8080,'users':[{'uuid':str(uuid.uuid4())}],'transport':{'type':'ws','path':'/private'}}]}
+        (self.base/'argo-server.json').write_text(json.dumps(argo_config))
+        original_argo=(self.base/'argo-server.json').read_bytes()
+        self.bin.write_text('#!/bin/sh\nif [ "$1" = generate ]; then printf "PrivateKey: test-private\\nPublicKey: test-public\\n"; fi\nexit 0\n')
+        self.bin.chmod(0o700)
+        stage=self.base/'edit.initial';stage.mkdir()
+        value=port()
+        self.shell('configuration_engine '+shlex.quote(str(stage))+' add vless '+str(value)+' addons.mozilla.org 2606:4700:4700::1111 ::')
+        candidate=json.loads((stage/'0-config.json').read_text())
+        metadata=json.loads((stage/'0-state.json').read_text())
+        self.assertEqual(candidate['inbounds'][0]['listen'],'::')
+        self.assertEqual(candidate['inbounds'][0]['listen_port'],value)
+        self.assertEqual(metadata['ip'],'2606:4700:4700::1111')
+        self.assertNotIn('deployment',metadata)
+        self.shell('configuration_commit '+shlex.quote(str(stage)))
+        self.assertEqual(json.loads((self.config/'config.json').read_text()),candidate)
+        self.assertEqual((self.base/'argo-server.json').read_bytes(),original_argo)
+
+    def test_argo_only_can_be_extended_with_a_direct_self_signed_hy2_node(self):
+        config={'log':{'level':'warn'},'inbounds':[],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
+        (self.config/'config.json').write_text(json.dumps(config))
+        state={'deployment':'argo-only','mode':'0','node_name':'SKYBYTE','ip':'127.0.0.1','listen':'0.0.0.0','hop':False}
+        (self.base/'state.json').write_text(json.dumps(state))
+        stage=self.base/'edit.initial';stage.mkdir()
+        value=port(socket.SOCK_DGRAM)
+        self.shell('configuration_engine '+shlex.quote(str(stage))+' add hysteria2 '+str(value)+' 1.1.1.1 selfsigned 1.1.1.1 0.0.0.0')
+        candidate=json.loads((stage/'0-config.json').read_text())
+        metadata=json.loads((stage/'0-state.json').read_text())
+        self.assertEqual(candidate['inbounds'][0]['type'],'hysteria2')
+        self.assertEqual(candidate['inbounds'][0]['listen'],'0.0.0.0')
+        self.assertEqual(candidate['inbounds'][0]['tls']['server_name'],'1.1.1.1')
+        self.assertNotEqual(candidate['inbounds'][0]['users'][0]['password'],'')
+        self.assertNotIn('deployment',metadata)
+        self.shell('configuration_commit '+shlex.quote(str(stage)))
+        self.assertTrue((self.config/'hy2-added.crt').is_file())
+        self.assertTrue((self.config/'hy2-added.key').is_file())
+
+    def test_first_direct_node_after_argo_enables_the_admin_service(self):
+        result=self.shell('setup_service(){ echo SETUP; }; systemctl(){ echo "SYSTEMCTL $*"; }; warp_resume(){ echo "RESUME $*"; }; configuration_resume true false true false')
+        self.assertIn('SYSTEMCTL enable --now sing-box.service',result.stdout)
+        self.assertIn('RESUME true true false',result.stdout)
+
+    def test_standalone_argo_bootstrap_refuses_existing_config_unchanged(self):
+        original=b'{"existing":"keep"}\n'
+        (self.config/'config.json').write_bytes(original)
+        code='''need_root(){ :; }; rescue_dependencies(){ :; }
+download_binary(){ echo DOWNLOADED >&2; return 1; }
+systemctl(){ return 1; }; confirm(){ return 0; }
+rescue_bootstrap_core'''
+        result=self.shell(code,ok=False)
+        self.assertNotEqual(result.returncode,0)
+        self.assertNotIn('DOWNLOADED',result.stderr)
+        self.assertEqual((self.config/'config.json').read_bytes(),original)
+
+    def test_standalone_argo_keeps_existing_manager_directory_mode_and_files(self):
+        self.bin=self.root/'new-sing-box'
+        language=self.base/'language.conf';language.write_text('en_US\n');self.base.chmod(0o755)
+        code='''need_root(){ :; }; rescue_dependencies(){ :; }
+download_binary(){ printf '#!/bin/sh\\nexit 0\\n' > "$2"; chmod 700 "$2"; }
+setup_service(){ printf 'Description=sing-box (managed by singbox-v2)\\nExecStart=%s run -c %s\\n' "$BIN" "$CONF" > "$SYSTEMD_DIR/sing-box.service"; }
+systemctl(){ if [[ $1 == list-unit-files ]]; then return 1; fi; }
+confirm(){ return 0; }
+rescue_bootstrap_core'''
+        self.shell(code)
+        self.assertEqual(self.base.stat().st_mode&0o777,0o755)
+        self.assertEqual(language.read_text(),'en_US\n')
+
+    def test_argo_only_exports_only_live_tunnel_and_clears_stale_files(self):
+        self.prepare_argo('quick')
+        config={'log':{'level':'warn'},'inbounds':[],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
+        (self.config/'config.json').write_text(json.dumps(config))
+        state={'deployment':'argo-only','mode':'0','node_name':'SKYBYTE','ip':'127.0.0.1','hop':False}
+        (self.base/'state.json').write_text(json.dumps(state))
+        (self.base/'sing-box-client.json').write_text('old direct node must be removed')
+        self.shell('exports')
+        links=(self.base/'nodes.txt').read_text().splitlines()
+        self.assertEqual(len(links),1)
+        self.assertIn('test-route.trycloudflare.com',links[0])
+        self.assertEqual([i['type'] for i in json.loads((self.base/'outbounds.json').read_text())['outbounds']],['vless'])
+        self.assertTrue((self.base/'sing-box-client.json').exists())
+
+        self.prepare_argo('quick',connected=False)
+        (self.config/'config.json').write_text(json.dumps(config))
+        (self.base/'state.json').write_text(json.dumps(state))
+        self.shell('exports')
+        self.assertEqual((self.base/'nodes.txt').read_text(),'\n')
+        self.assertFalse((self.base/'sing-box-client.json').exists())
+        self.assertIn('not registered',(self.base/'subscription-notes.txt').read_text())
+
     def test_argo_worker_publishes_on_registration_and_clears_on_stop(self):
         for mode in ['quick','named']:
             self.prepare_argo(mode,False)

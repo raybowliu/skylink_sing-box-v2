@@ -13,7 +13,12 @@ PY_CONFIG
 }
 configuration_apply(){
  configuration_guard && users_guard && warp_guard && argo_guard && hop_guard || return 1
- local stage snap admin=false users=false argo=false hop_active=false
+ local stage snap admin=false users=false argo=false hop_active=false first_admin=false
+ if python3 - "$CONF" "$META" <<'PY_INITIAL_ADMIN'
+import json,sys
+c=json.load(open(sys.argv[1]));s=json.load(open(sys.argv[2]));sys.exit(0 if not c.get('inbounds') and s.get('deployment')=='argo-only' else 1)
+PY_INITIAL_ADMIN
+ then first_admin=true;admin=true;fi
  stage=$(mktemp -d "$BASE/edit.XXXXXX") || return 1
  if ! configuration_engine "$stage" "$@";then rm -rf "$stage";return 1;fi
  if ! haproxy_engine check_configs "$stage";then rm -rf "$stage";return 1;fi
@@ -22,11 +27,12 @@ configuration_apply(){
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service;then users=true;users_stop || { rm -rf "$stage";return 1; };fi
  if [[ -f $BASE/argo-state.json ]] && systemctl is-active --quiet skybyte-argo-node.service;then argo=true;fi
  if [[ $(state hop) == True ]];then hop_active=true;hop_disable || { warp_resume "$admin" "$argo" "$users" || :;rm -rf "$stage";return 1; };fi
- if ! configuration_commit "$stage" || ! warp_resume "$admin" "$argo" "$users";then
+ if ! configuration_commit "$stage" || ! configuration_resume "$first_admin" "$admin" "$argo" "$users";then
   [[ $users != true ]] || users_stop || :
+  [[ $first_admin != true ]] || systemctl disable --now sing-box.service || :
   configuration_rollback "$stage" || :
   if [[ $hop_active == true ]];then systemctl start singbox-v2-hop.service || :;fi
-  warp_resume "$admin" "$argo" "$users" || :
+  warp_resume false "$argo" "$users" || :
   rm -rf "$stage";err "$(L '配置修改失败，已尝试恢复原配置' 'Configuration edit failed; original config restoration attempted')";return 1
  fi
  rm -rf "$stage"
@@ -66,9 +72,17 @@ for source,value,exists in json.loads((pathlib.Path(sys.argv[1])/'rollback.json'
  elif p.exists():p.unlink()
 PY_CONFIG_ROLLBACK
 }
+configuration_resume(){
+ local first_admin=$1 admin=$2 argo=$3 users=$4
+ if [[ $first_admin == true ]];then
+  setup_service && systemctl enable --now sing-box.service || return 1
+  admin=true
+ fi
+ warp_resume "$admin" "$argo" "$users"
+}
 node_settings(){
  check_owned || return 1
- local choice vp hp value protocol cert key domain up down ignore obfs
+ local choice vp hp value protocol cert key domain up down ignore obfs bootstrap=false public='' listen='' family
  prompt_options '1 修改主节点端口  2 服务器地址 / DDNS  3 Reality 握手域名  4 添加协议  5 移除协议  6 HY2 参数  7 使用已有 TLS 证书  0 返回' '1 Admin ports  2 Server address / DDNS  3 Reality handshake  4 Add protocol  5 Remove protocol  6 HY2 options  7 Existing TLS certificate  0 Back'
  prompt_read '> ' choice || return 0
  case $choice in
@@ -82,22 +96,39 @@ node_settings(){
    prompt_options '1 Reality + Vision  2 Hysteria2' '1 Reality + Vision  2 Hysteria2';prompt_read '> ' protocol || return 0
    case $protocol in 1) protocol=vless;;2) protocol=hysteria2;;*) return 1;;esac
    if [[ $choice == 5 ]];then confirm "$(L '移除所选协议，保留另一协议与用户额度？' 'Remove selected protocol, retaining the other and account quotas?')" && configuration_apply remove "$protocol";return;fi
+   if [[ $(python3 - "$CONF" "$META" <<'PY_INITIAL_NODE'
+import json,sys
+c=json.load(open(sys.argv[1]));s=json.load(open(sys.argv[2]));print('yes' if not c.get('inbounds') and s.get('deployment')=='argo-only' else 'no')
+PY_INITIAL_NODE
+   ) == yes ]];then
+    bootstrap=true
+    prompt_read "$(L '客户端使用的公网 IP / 域名：' 'Public IP/hostname used by clients: ')" public || return 0
+    public=$(rescue_engine address "$public") || { err "$(L '公网地址无效' 'Invalid public address')";return 1; }
+    family=$(rescue_engine family) || return 1
+    case $family in 4)listen=0.0.0.0;;6)listen=::;;*)listen=::;;esac
+    prompt_options '本机监听地址族：1 自动  2 IPv4  3 IPv6' 'Local bind family: 1 Auto  2 IPv4  3 IPv6'
+    prompt_read '> ' family || return 0
+    case ${family:-1} in 1);;2)listen=0.0.0.0;;3)listen=::;;*)return 1;;esac
+   fi
    prompt_read "$(L '管理员监听端口 [443]：' 'Admin listener port [443]: ')" value || return 0;value=${value:-443}
    if [[ $protocol == vless ]];then prompt_read 'Reality SNI [addons.mozilla.org]: ' domain || return 0
-    confirm "$(L '追加 Reality，保留现有凭据？' 'Add Reality, retaining existing credentials?')" && configuration_apply add vless "$value" "${domain:-addons.mozilla.org}"
+    if [[ $bootstrap == true ]];then confirm "$(L '添加直连 Reality 节点并保留独立 Argo 隧道？' 'Add a direct Reality node and retain the separate Argo tunnel?')" && configuration_apply add vless "$value" "${domain:-addons.mozilla.org}" "$public" "$listen"
+    else confirm "$(L '追加 Reality，保留现有凭据？' 'Add Reality, retaining existing credentials?')" && configuration_apply add vless "$value" "${domain:-addons.mozilla.org}";fi
    else
     prompt_options '1 自动自签名（无域名）  2 已有证书 / 托管 ACME' '1 Automatic self-signed (no domain)  2 Existing certificate / managed ACME'
     prompt_read '> ' protocol || return 0
     if [[ $protocol == 1 ]];then
-     domain=$(state ip) || return 1
-     confirm "$(L '自动生成自签名证书并追加 HY2？客户端仍需信任公开证书。' 'Generate self-signed TLS and add HY2? Clients still need public-certificate trust.')" && configuration_apply add hysteria2 "$value" "$domain" selfsigned
+     if [[ $bootstrap == true ]];then domain=$public;else domain=$(state ip) || return 1;fi
+     if [[ $bootstrap == true ]];then confirm "$(L '生成自签名证书并添加 HY2；保留独立 Argo 隧道？客户端仍需信任公开证书。' 'Generate self-signed TLS and add HY2 while retaining the separate Argo tunnel? Clients must trust the public certificate.')" && configuration_apply add hysteria2 "$value" "$domain" selfsigned "$public" "$listen"
+     else confirm "$(L '自动生成自签名证书并追加 HY2？客户端仍需信任公开证书。' 'Generate self-signed TLS and add HY2? Clients still need public-certificate trust.')" && configuration_apply add hysteria2 "$value" "$domain" selfsigned;fi
      return
     fi
     [[ $protocol == 2 ]] || return 1
     prompt_read "$(L '证书名称（域名或 IP）：' 'Certificate identity (domain or IP): ')" domain || return 0
     prompt_read 'TLS fullchain: ' cert || return 0;prompt_read 'TLS private key: ' key || return 0
     validate_certificate "$cert" "$key" "$domain" || return 1
-    confirm "$(L '追加 HY2，沿用证书并保留用户用量？' 'Add HY2 with this certificate, retaining user usage?')" && configuration_apply add hysteria2 "$value" "$domain" "$cert" "$key"
+    if [[ $bootstrap == true ]];then confirm "$(L '添加 HY2 并保留独立 Argo 隧道？' 'Add HY2 and retain the separate Argo tunnel?')" && configuration_apply add hysteria2 "$value" "$domain" "$cert" "$key" "$public" "$listen"
+    else confirm "$(L '追加 HY2，沿用证书并保留用户用量？' 'Add HY2 with this certificate, retaining account usage?')" && configuration_apply add hysteria2 "$value" "$domain" "$cert" "$key";fi
    fi;;
   6) prompt_read "$(L '上行 Mbps [0=自动]：' 'Upload Mbps [0=auto]: ')" up || return 0;prompt_read "$(L '下行 Mbps [0=自动]：' 'Download Mbps [0=auto]: ')" down || return 0
    prompt_options '1 按带宽设置  2 忽略客户端带宽（须上下行均为0）' '1 Use bandwidth settings  2 Ignore client bandwidth (both must be 0)';prompt_read '> ' ignore || return 0

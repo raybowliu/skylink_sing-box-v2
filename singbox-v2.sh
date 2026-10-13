@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.7.0
+MANAGER_VERSION=2.8.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -93,7 +93,7 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：HAProxy TCP 透传（4 → 11）、住宅落地中转、在线订阅、ACME 与备份加密' 'Features: HAProxy TCP passthrough (4 → 11), residential relay, HTTPS subscriptions, ACME and encrypted backups'
+ say '功能更新：受限网络部署（1 → 6）、独立 Argo、IPv6/NAT、WARP 双栈与详细流媒体检测' 'Features: restricted-network deployment (1 → 6), standalone Argo, IPv6/NAT, WARP dual-stack and detailed media probes'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
@@ -209,7 +209,8 @@ PY_NAME_IP
 download_binary(){
  local version=$1 target=$2 arch tmp asset sum
  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
- case "$(uname -m)" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; *) err "$(L '不支持此架构' 'Unsupported architecture')"; return 1;; esac
+ arch=$(rescue_engine arch "$(uname -m)" sing-box) || return 1
+ if [[ -n ${SKYBYTE_ASSET_DIR:-} ]];then rescue_engine asset "$SKYBYTE_ASSET_DIR" sing-box "$version" "$(uname -m)" "$target";return $?;fi
  tmp=$(mktemp -d) || return 1
  asset="sing-box-$version-linux-$arch.tar.gz"
  if ! curl -fsSL --retry 2 --max-time 180 "https://github.com/SagerNet/sing-box/releases/download/v$version/$asset" -o "$tmp/$asset" ||
@@ -282,12 +283,16 @@ write_config(){
 import json,sys
 conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
 node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
-listen='::' if ':' in ip else '0.0.0.0'
+vp=int(sys.argv[16]) if len(sys.argv)>16 else 443;hp=int(sys.argv[17]) if len(sys.argv)>17 else 443
+assert 1<=vp<=65535 and 1<=hp<=65535
+listen=sys.argv[18] if len(sys.argv)>18 and sys.argv[18] else ('::' if ':' in ip else '0.0.0.0')
+assert listen in ('::','0.0.0.0')
 d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':listen,'listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
 elif mode=='2': d['inbounds']=d['inbounds'][1:]
+for i in d['inbounds']:i['listen_port']=vp if i['type']=='vless' else hp
 with open(conf,'w') as f:json.dump(d,f,indent=2)
-with open(meta,'w') as f:json.dump({'node_name':node_name,'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'managed_certificates':[cert,key] if cert_mode=='1' else [],'ip':ip,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
+with open(meta,'w') as f:json.dump({'node_name':node_name,'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'managed_certificates':[cert,key] if cert_mode=='1' else [],'ip':ip,'listen':listen,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
 PY
 }
 install_protocol() (
@@ -298,7 +303,7 @@ install_protocol() (
  # shellcheck source=/dev/null
  . "$OS_RELEASE"
  case ${ID:-} in ubuntu|debian) ;; *) err "$(L '仅支持 Ubuntu/Debian' 'Ubuntu/Debian required')"; return 1;; esac
- local mode="${1:-}" cert_mode="" 
+ local mode="${1:-}" cert_mode="" vp=443 hp=443 supplied_ip='' listen_addr=''
  if [[ -z "$mode" ]]; then prompt_options '1 Reality 单协议 | 2 HY2 单协议 | 3 双协议 | 0 返回' '1 Reality only | 2 HY2 only | 3 Dual | 0 Back'
  prompt_read '> ' mode || return; fi
  [[ "$mode" == 0 ]] && return 0
@@ -307,9 +312,22 @@ install_protocol() (
  if [[ -e $CONF || -L $CONF || -e $META || -L $META || -e $BIN || -L $BIN || -e $SYSTEMD_DIR/sing-box.service || -L $SYSTEMD_DIR/sing-box.service ]] || command -v sing-box >/dev/null; then err "$(L '发现已有配置，拒绝覆盖' 'Existing configuration or binary found; refusing to overwrite')"; return 1; fi
  if systemctl list-unit-files sing-box.service --no-legend 2>/dev/null | grep -q sing-box; then err "$(L '已有 sing-box 服务，拒绝覆盖' 'Existing sing-box service found; refusing to overwrite')"; return 1; fi
  require_cmd ss || { apt-get update && apt-get install -y iproute2 || return 1; }
- if [[ $mode != 2 ]];then haproxy_engine check_port 443 || return 1;fi
- if [[ $mode != 2 ]] && ss -H -ltn '( sport = :443 )' | grep -q .; then err "$(L 'TCP 443 已被占用' 'TCP 443 is occupied')"; return 1; fi
- if [[ $mode != 1 ]] && ss -H -lun '( sport = :443 )' | grep -q .; then err "$(L 'UDP 443 已被占用' 'UDP 443 is occupied')"; return 1; fi
+ if [[ ${2:-} == custom ]];then
+  if [[ $mode != 2 ]];then prompt_read "$(L '本机 Reality TCP 端口 [443]：' 'Local Reality TCP port [443]: ')" vp || return 1;vp=${vp:-443};fi
+  if [[ $mode != 1 ]];then prompt_read "$(L '本机 HY2 UDP 端口 [443]：' 'Local HY2 UDP port [443]: ')" hp || return 1;hp=${hp:-443};fi
+  prompt_read "$(L '客户端连接的公网 IP / 域名（回车自动查询）：' 'Public IP/hostname for clients (Enter detects): ')" supplied_ip || return 1
+  [[ -z $supplied_ip ]] || supplied_ip=$(rescue_engine address "$supplied_ip") || return 1
+  local native_family
+  native_family=$(rescue_engine family) || return 1
+  case $native_family in 4) listen_addr=0.0.0.0;; 6) listen_addr=::;; *) [[ $supplied_ip == *:* ]] && listen_addr=:: || listen_addr=0.0.0.0;; esac
+  prompt_options '本机监听地址族：1 自动  2 IPv4  3 IPv6（NAT 请按 VPS 网卡选择）' 'Local bind family: 1 Auto  2 IPv4  3 IPv6 (for NAT, choose the VPS interface family)'
+  prompt_read '> ' native_family || return 1
+  case ${native_family:-1} in 1);; 2)listen_addr=0.0.0.0;; 3)listen_addr=::;; *)return 1;; esac
+ fi
+ valid_port "$vp" && valid_port "$hp" || return 1;vp=$((10#$vp));hp=$((10#$hp))
+ if [[ $mode != 2 ]];then haproxy_engine check_port "$vp" || return 1;fi
+ if [[ $mode != 2 ]] && ss -H -ltn "( sport = :$vp )" | grep -q .; then err "TCP $vp: $(L '已被占用' 'occupied')"; return 1; fi
+ if [[ $mode != 1 ]] && ss -H -lun "( sport = :$hp )" | grep -q .; then err "UDP $hp: $(L '已被占用' 'occupied')"; return 1; fi
  local domain="" cert="" key="" sni="" node_name
  node_name=$(choose_node_name) || { err "$(L '节点名称无效' 'Invalid node name')"; return 1; }
  if [[ $mode != 1 ]]; then
@@ -334,8 +352,10 @@ install_protocol() (
   sni=${sni:-addons.mozilla.org}
   [[ $sni =~ ^[a-zA-Z0-9.-]+$ ]] || { err "$(L '无效 SNI' 'Invalid SNI')"; return 1; }
  fi
- say '安装依赖...' 'Installing dependencies...'; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables procps || return 1
- require_cmd getent; getent ahosts github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS' 'GitHub DNS lookup failed; fix DNS first')"; return 1; }
+ if [[ -z ${SKYBYTE_ASSET_DIR:-} ]];then
+  say '安装依赖...' 'Installing dependencies...'; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables procps || return 1
+  require_cmd getent; getent ahosts github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS或使用离线包' 'GitHub DNS lookup failed; repair DNS or use offline assets')"; return 1; }
+ else rescue_dependencies && require_cmd openssl || return 1;fi
  mkdir -p "$(dirname "$BIN")"
  if [[ $cert_mode == 2 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
  if [[ $cert_mode == 1 ]]; then
@@ -352,20 +372,29 @@ install_protocol() (
  priv=$(sed -n 's/^PrivateKey: *//p' <<<"$pair"); pub=$(sed -n 's/^PublicKey: *//p' <<<"$pair")
  [[ -n $priv && -n $pub ]] || { err "$(L 'Reality 密钥生成失败' 'Reality key generation failed')"; return 1; }; fi
  sid=$(openssl rand -hex 4); passwd=$(openssl rand -hex 16)
- ip=$(curl -q -4fsS --noproxy '*' --max-time 12 https://api.ipify.org) || ip=$(curl -q -6fsS --noproxy '*' --max-time 12 https://api64.ipify.org) || { err "$(L '公网 IP 查询失败' 'Public IP lookup failed')"; return 1; }
+ if [[ -n $supplied_ip ]];then ip=$supplied_ip;else
+ ip=$(curl -q -4fsS --noproxy '*' --max-time 12 https://api.ipify.org) || ip=$(curl -q -6fsS --noproxy '*' --max-time 12 https://api64.ipify.org) || { err "$(L '公网 IP 查询失败，请从受限网络入口指定地址' 'Public IP lookup failed; specify an address via restricted-network setup')"; return 1; }
  python3 - "$ip" <<'PY' || return 1
 import ipaddress,sys
 assert ipaddress.ip_address(sys.argv[1]).is_global
 PY
+ fi
  mkdir -p "$(dirname "$CONF")"
  if [[ $cert_mode == 1 ]]; then
   [[ ! -e $(dirname "$CONF")/hy2-selfsigned.crt && ! -e $(dirname "$CONF")/hy2-selfsigned.key ]] || { err "TLS files already exist"; return 1; }
   domain="$ip"; cert="$(dirname "$CONF")/hy2-selfsigned.crt"; key="$(dirname "$CONF")/hy2-selfsigned.key"
-  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=IP:$ip" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
+  local san
+  san=$(python3 - "$ip" <<'PY_INSTALL_SAN'
+import ipaddress,sys
+try:ipaddress.ip_address(sys.argv[1]);print('IP:'+sys.argv[1])
+except ValueError:print('DNS:'+sys.argv[1])
+PY_INSTALL_SAN
+  ) || return 1
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=$san" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
   chmod 600 "$key"; chmod 644 "$cert"
  fi
  if [[ $mode != 1 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
- write_config "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode" "$node_name"
+ write_config "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode" "$node_name" "$vp" "$hp" "$listen_addr"
  chmod 600 "$CONF" "$META"
  "$BIN" check -c "$CONF" || { err "$(L '配置检查失败' 'Configuration check failed')"; return 1; }
  exports >/dev/null || return 1
@@ -374,7 +403,7 @@ PY
  cert=$(state cert_path)
  "$BIN" check -c "$CONF" || return 1
  setup_service || return 1
- if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then if [[ $mode != 2 ]]; then ufw allow 443/tcp; fi; if [[ $mode != 1 ]]; then ufw allow 443/udp; fi; fi
+ if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then if [[ $mode != 2 ]]; then ufw allow "$vp/tcp"; fi; if [[ $mode != 1 ]]; then ufw allow "$hp/udp"; fi; fi
  systemctl daemon-reload && systemctl enable --now sing-box && systemctl restart sing-box || return 1
  sleep 2; systemctl is-active --quiet sing-box || { err "$(L '服务启动失败，请查看 journalctl -u sing-box' 'Service failed; inspect journalctl -u sing-box')"; return 1; }
  if [[ $cert_mode == 1 ]]; then echo "$(L '自签名证书：' 'Self-signed certificate: ')$cert"; openssl x509 -in "$cert" -noout -fingerprint -sha256; say '务必将证书安全导入客户端并验证，链接本身不足以建立信任。' 'Securely import and verify certificate on client; URL alone cannot establish trust.'; fi
@@ -394,21 +423,24 @@ separator='-'*64
 node_name=s.get('node_name') or 'SKYBYTE'
 reality_name=node_name+'-Reality'; hy2_name=node_name+'-HY2'
 config=json.load(open(sys.argv[3])); inbound={i['type']:i for i in config['inbounds'] if i['type'] in ('vless','hysteria2')}
-if not inbound: raise ValueError('No supported installed protocols')
-mode='3' if len(inbound)==2 else '1' if 'vless' in inbound else '2'
+if not inbound and s.get('deployment')!='argo-only': raise ValueError('No supported installed protocols')
+mode='0' if not inbound else '3' if len(inbound)==2 else '1' if 'vless' in inbound else '2'
 if 'vless' in inbound:
  i=inbound['vless'];s.update(uuid=i['users'][0]['uuid'],sni=i['tls']['server_name'],sid=i['tls']['reality']['short_id'][0])
 if 'hysteria2' in inbound:
  i=inbound['hysteria2'];s.update(hy2_password=i['users'][0]['password'],domain=i['tls']['server_name'],cert_path=i['tls']['certificate_path'])
 d=s.get('domain','');sni=s.get('sni','')
 vp=inbound.get('vless',{}).get('listen_port',443); hp=inbound.get('hysteria2',{}).get('listen_port',443)
+export_ports=s.get('export_ports',{})
+vp=export_ports.get('vless',0) or vp;hp=export_ports.get('hysteria2',0) or hp
+assert type(vp) is int and type(hp) is int and 1<=vp<=65535 and 1<=hp<=65535
 cert_pem=None; fingerprint=None
 self_signed=s.get('cert_mode')=='1'
-if mode!='1':
+if 'hysteria2' in inbound:
  identity=subprocess.check_output(['openssl','x509','-in',s['cert_path'],'-noout','-issuer','-subject','-nameopt','RFC2253'],text=True).splitlines()
  names=[line.split('=',1)[1].strip() for line in identity]
  self_signed=self_signed or names[0]==names[1]
-if mode!='1' and self_signed:
+if 'hysteria2' in inbound and self_signed:
  import hashlib,ssl
  cert_pem=open(s['cert_path']).read()
  fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
@@ -418,8 +450,8 @@ hy2_extra={}
 if 'hysteria2' in inbound and inbound['hysteria2'].get('obfs'):
  ob=inbound['hysteria2']['obfs'];hy2_extra={'obfs':ob['type'],'obfs-password':ob['password']}
 h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),authority_ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}),**hy2_extra)),urllib.parse.quote(hy2_name,safe=''))
-links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
-link_names=[reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
+links=[] if mode=='0' else [v] if mode=='1' else [h] if mode=='2' else [v,h]
+link_names=[] if mode=='0' else [reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
 argo=None;argo_note=None;argo_name=node_name+'-Argo'
 argo_state=os.path.join(base,'argo-state.json');argo_conf=os.path.join(base,'argo-server.json')
 if os.path.isfile(argo_state):
@@ -447,6 +479,16 @@ subscription_text=base64.b64encode(node_text.encode()).decode()+'\n'
 write('nodes.txt',node_text); write('subscription-base64.txt',subscription_text)
 write('v2rayn-nodes.txt',node_text); write('v2rayn-subscription.txt',subscription_text)
 write('shadowrocket-nodes.txt',node_text); write('shadowrocket-subscription.txt',subscription_text)
+if not links:
+ # A stopped standalone tunnel must never export an old address or direct fallback.
+ for name in ('shadowrocket-native-nodes.txt','shadowrocket-native-subscription.txt'):write(name,'')
+ write('outbounds.json',json.dumps({'outbounds':[]})+'\n')
+ for name in ('sing-box-client.json','clash-verge.yaml','mihomo-proxies.yaml'):
+  path=os.path.join(base,name)
+  if os.path.islink(path):raise ValueError('Export symlink')
+  if os.path.isfile(path):os.remove(path)
+ message=argo_note or tr('尚无可用节点；请启动 Argo 隧道或添加直连协议。','No ready nodes; start Argo or add a direct protocol.')
+ write('subscription-notes.txt',message+'\n');print(message);sys.exit(0)
 # Shadowrocket's native VLESS dialect: base64(auto:UUID@host:port).
 # Keep standard exports intact for existing consumers.
 rocket_links=[]
@@ -468,10 +510,10 @@ write('shadowrocket-native-nodes.txt',rocket_text)
 write('shadowrocket-native-subscription.txt',base64.b64encode(rocket_text.encode()).decode()+'\n')
 
 out=[];proxy=[]
-if mode!='2':
+if 'vless' in inbound:
  out.append({'type':'vless','tag':reality_name,'server':ip,'server_port':vp,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
  proxy.append({'name':reality_name,'type':'vless','server':ip,'port':vp,'uuid':s['uuid'],'network':'tcp','tls':True,'servername':sni,'client-fingerprint':'chrome','flow':'xtls-rprx-vision','reality-opts':{'public-key':s['public_key'],'short-id':s['sid']}})
-if mode!='1':
+if 'hysteria2' in inbound:
  tls={'enabled':True,'server_name':d}
  if self_signed:tls['certificate']=cert_pem.splitlines()
  ho={'type':'hysteria2','tag':hy2_name,'server':ip,'server_port':hp,'password':s['hy2_password'],'tls':tls}
@@ -550,7 +592,7 @@ notes=[]
 if argo_note:notes.append(argo_note)
 if argo:
  notes.append(tr('Argo 使用 VLESS+WS+TLS，不是 Reality/Vision 或 HY2。临时隧道重启后请重新导入新地址。','Argo uses VLESS+WS+TLS, not Reality/Vision or HY2. Re-import changed Quick Tunnel hostnames after restarting.'))
-if mode!='1' and self_signed:
+if 'hysteria2' in inbound and self_signed:
  notes += [tr('无域名模式仍使用 TLS 自签名证书；只导入链接不会自动建立信任。','No-domain mode still uses self-signed TLS; importing a URI does not establish trust.'),
            tr('SHA-256 指纹：','SHA-256 fingerprint: ')+fingerprint,
            tr('sing-box JSON 和 Mihomo YAML 已包含公开信任证书。','sing-box JSON and Mihomo YAML include the trusted public certificate.'),
@@ -727,7 +769,7 @@ managed_restart(){
  if [[ -f $SYSTEMD_DIR/skybyte-argo-node.service ]] && systemctl is-active --quiet skybyte-argo-node.service; then argo_active=true; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-tunnel.service ]] && systemctl is-active --quiet skybyte-argo-tunnel.service; then tunnel_active=true; fi
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service; then users_guard || return 1; users_active=true; fi
- systemctl restart sing-box && service_healthy || return 1
+ admin_restart || return 1
  if [[ $argo_active == true ]]; then
   systemctl restart skybyte-argo-node.service && systemctl is-active --quiet skybyte-argo-node.service || return 1
   if [[ $tunnel_active == true ]]; then systemctl restart skybyte-argo-tunnel.service || return 1; fi
@@ -745,7 +787,7 @@ apply_update(){
  if [[ -f $BASE/users.json ]]; then if ! users_guard || ! users_engine validate "$candidate"; then rm -f "$candidate"; return 1; fi; fi
  command install -m 755 "$candidate" "$BIN" || return 1; rm -f "$candidate"
  if ! managed_restart; then
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; admin_restart || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '更新失败，已恢复原二进制' 'Update failed; original binary restored')"; return 1
  fi
  python3 - "$BASE/core-version.json" "$new" "$CORE_RECOMMENDED" <<'PY_CORE_VERSION'
@@ -856,9 +898,9 @@ restore(){
  users_stop || return 1
  cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
  command install -m 755 "$path/sing-box.bin" "$BIN" || return 1
- if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! systemctl restart sing-box || ! service_healthy || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path" || ! auxiliary_restore_snapshot "$path"; then
+ if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! admin_restart || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path" || ! auxiliary_restore_snapshot "$path"; then
   cp -a "$snap/config/." "$(dirname "$CONF")"; cp "$snap/state.json" "$META"
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; admin_restart || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '恢复失败，已回滚' 'Restore failed; rolled back')"; return 1
  fi
  # Hopping is host state: avoid restoring metadata claiming rules that are absent.
@@ -1275,6 +1317,7 @@ with lock():
      for field,filename in [('certificate_path','certificate.crt'),('key_path','private.key')]:
       shutil.copyfile(inbound['tls'][field],p/filename);os.chmod(p/filename,0o600);inbound['tls'][field]=str(p/filename)
      metadata['cert_path']=str(p/'certificate.crt')
+   metadata.pop('export_ports',None)
    metadata.update(node_name=n,uuid=identity,hy2_password=password,hop=False,managed_certificates=[str(p/'certificate.crt'),str(p/'private.key')] if (p/'certificate.crt').exists() else [])
    atomic(p/'server.json',template);atomic(p/'state.json',metadata);config_check(p/'server.json')
    u={'id':uid,'name':n,'quota_bytes':q,'upload':0,'download':0,'expires_at':int(time.time())+valid,'enabled':True,'port':port,'api_port':controller,'api_secret':token,'running':False,'metering_blocked':False}
@@ -1517,6 +1560,11 @@ users_qr(){
 }
 users_manager(){
  check_owned && users_guard || return 1
+ if ! python3 - "$CONF" <<'PY_USERS_PROTOCOLS'
+import json,sys
+sys.exit(0 if any(i.get('type') in ('vless','hysteria2') for i in json.load(open(sys.argv[1])).get('inbounds',[])) else 1)
+PY_USERS_PROTOCOLS
+ then warn "$(L 'Argo 单独部署不支持配额用户；请先安装 Reality 或 HY2 直连节点。' 'Quota accounts require a direct Reality or HY2 node; standalone Argo alone is unsupported.')";return 1;fi
  warn "$(L '仅新建的受限账户执行人数、流量和到期限制。原管理员节点及 Argo 不受此配额管理。每人独立进程/端口；请放行云防火墙对应端口。' 'Limits apply only to new managed accounts. Existing admin nodes and Argo are outside these quotas. Each account uses its own process/port; allow those provider firewall ports.')"
  local choice max name quota days id action port snap
  while :; do
@@ -1621,7 +1669,8 @@ argo_guard(){
 }
 download_cloudflared(){
  local target=$1 tmp arch tag asset digest
- case "$(uname -m)" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; *) return 1;; esac
+ arch=$(rescue_engine arch "$(uname -m)" cloudflared) || return 1
+ if [[ -n ${SKYBYTE_ASSET_DIR:-} ]];then rescue_engine asset "$SKYBYTE_ASSET_DIR" cloudflared '' "$(uname -m)" "$target";return $?;fi
  tmp=$(mktemp -d) || return 1
  curl -fsSL --retry 2 --max-time 30 https://api.github.com/repos/cloudflare/cloudflared/releases/latest -o "$tmp/release.json" || { rm -rf "$tmp"; return 1; }
  tag=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r["prerelease"] and not r["draft"]; print(r["tag_name"])' "$tmp/release.json") || { rm -rf "$tmp"; return 1; }
@@ -1704,7 +1753,13 @@ argo_wait(){
  return 1
 }
 argo_install(){
- need_root; check_owned || return 1; argo_guard || return 1
+ need_root
+ if [[ ! -e $CONF && ! -e $META && ! -L $CONF && ! -L $META ]];then
+  local bootstrap_rc=0;rescue_bootstrap_core || bootstrap_rc=$?
+  [[ $bootstrap_rc != 2 ]] || return 0
+  [[ $bootstrap_rc == 0 ]] || return "$bootstrap_rc"
+ fi
+ check_owned || return 1; argo_guard || return 1
  local mode=$1 port name domain='' token='' stage snap file
  [[ $mode == quick || $mode == named ]] || return 1
  for file in argo-state.json argo-server.json argo.token argo-empty.yml cloudflared; do
@@ -1731,6 +1786,7 @@ argo_install(){
  snap=$(backup) || return 1
  stage=$(mktemp -d "$BASE/.argo-install.XXXXXX") || return 1
  if ! argo_write_config "$stage" "$mode" "$domain" "$port" "$name" || ! "$BIN" check -c "$stage/argo-server.json" || ! download_cloudflared "$stage/cloudflared"; then rm -rf "$stage"; return 1; fi
+ rescue_engine options "$stage/argo-state.json" "$(rescue_engine family)" auto || { rm -rf "$stage";return 1; }
  if [[ $mode == named ]]; then printf '%s' "$token" >"$stage/argo.token"; token=''; fi
  chmod 600 "$stage"/argo-*; chmod 755 "$stage/cloudflared"
  for file in argo-state.json argo-server.json argo-empty.yml cloudflared argo.token; do
@@ -1762,7 +1818,9 @@ def sync():
  except (OSError,subprocess.TimeoutExpired):pass
 state=json.loads(state_path.read_text());mode=state['mode']
 assert mode in ('quick','named')
-common=[str(base/'cloudflared'),'tunnel','--config',str(base/'argo-empty.yml'),'--no-autoupdate','--grace-period','5s','--protocol','auto']
+edge=state.get('edge_ip_version','auto');transport=state.get('transport','auto')
+assert edge in ('auto','4','6') and transport in ('auto','quic','http2')
+common=[str(base/'cloudflared'),'tunnel','--config',str(base/'argo-empty.yml'),'--no-autoupdate','--grace-period','5s','--edge-ip-version',edge,'--protocol',transport]
 if mode=='quick':
  update(domain='',connected=False,last_error='');command=common+['--url',f"http://127.0.0.1:{state['port']}"]
 else:
@@ -1804,6 +1862,7 @@ argo_status(){
  say "最近错误类别：$(argo_state last_error)" "Last error category: $(argo_state last_error)"
  mode=$(argo_state mode); domain=$(argo_state domain); port=$(argo_state port); connected=$(argo_state connected)
  say "模式：${mode}；公开域名：${domain:-尚未分配}；本机端口：${port}；已注册：$connected" "Mode: $mode; hostname: ${domain:-not assigned}; local port: $port; registered: $connected"
+ say "连接地址族：$(argo_state edge_ip_version)；隧道传输：$(argo_state transport)" "Edge IP version: $(argo_state edge_ip_version); transport: $(argo_state transport)"
  if systemctl is-active --quiet skybyte-argo-node.service; then ok "$(L 'Argo WS 服务运行中' 'Argo WS origin active')"; else err "$(L 'Argo WS 服务未运行' 'Argo WS origin inactive')"; fi
  if systemctl is-active --quiet skybyte-argo-tunnel.service; then ok "$(L 'Argo 隧道服务运行中' 'Argo tunnel worker active')"; else err "$(L 'Argo 隧道服务未运行' 'Argo tunnel worker inactive')"; fi
  warn "$(L '服务运行不代表客户端可达；固定模式还需核对 Cloudflare 公开路由和客户端 SNI/WS 路径。' 'Active services do not prove client connectivity; verify published routes and client SNI/WS paths.')"
@@ -1874,11 +1933,11 @@ argo_restore_snapshot(){
 }
 argo_manager(){
  local choice
- prompt_options '1 临时隧道  2 固定隧道  3 状态  4 启动  5 停止  6 重启  7 刷新节点  8 卸载 Argo  0 返回' '1 Quick  2 Named  3 Status  4 Start  5 Stop  6 Restart  7 Refresh nodes  8 Remove Argo  0 Back'
+ prompt_options '1 临时隧道  2 固定隧道  3 状态  4 启动  5 停止  6 重启  7 刷新节点  8 卸载 Argo  9 地址族与传输设置  0 返回' '1 Quick  2 Named  3 Status  4 Start  5 Stop  6 Restart  7 Refresh nodes  8 Remove Argo  9 Address family/transport  0 Back'
  prompt_read '> ' choice || return 0
  case $choice in
   1) argo_install quick;; 2) argo_install named;; 3) argo_status;; 4) argo_start;;
-  5) argo_stop && exports;; 6) argo_stop && argo_start;; 7) exports;; 8) argo_remove;; 0) return 0;; *) err "$(L '无效选项' 'Invalid choice')"; return 1;;
+  5) argo_stop && exports;; 6) argo_stop && argo_start;; 7) exports;; 8) argo_remove;;9) argo_network_settings;; 0) return 0;; *) err "$(L '无效选项' 'Invalid choice')"; return 1;;
  esac
 }
 
@@ -2685,7 +2744,8 @@ def restore_routing(base,conf,snapshot,binary):
         if prior:atomic(base/'warp-state.json',prior)
         raise
 
-def gateway(profile,port,target,binary):
+def gateway(profile,port,target,binary,family='auto'):
+    if family not in ('auto','4','6'):raise ValueError('Invalid native gateway family')
     p=configparser.ConfigParser(interpolation=None,strict=True)
     try:
         with open(profile) as f:p.read_file(f)
@@ -2700,7 +2760,13 @@ def gateway(profile,port,target,binary):
     if {ipaddress.ip_interface(x).version for x in addresses}!={4,6} or set(allowed)!={'0.0.0.0/0','::/0'}:raise ValueError('A dual-stack WARP profile is required')
     endpoint=b['endpoint'].strip();match=re.fullmatch(r'(?:\[([^]]+)\]|([^:\s]+)):(\d+)',endpoint)
     if not match:raise ValueError('Invalid peer Endpoint')
-    address=match[1] or match[2];peer_port=int(match[3])
+    address=relay_address(match[1] or match[2]);peer_port=int(match[3])
+    try:
+        native=ipaddress.ip_address(address)
+        if family!='auto' and native.version!=int(family):raise ValueError('WireGuard Endpoint does not match native connectivity; supply a reachable peer IP')
+    except ValueError:
+        # Distinguish a hostname from a numeric endpoint in the wrong family.
+        if re.fullmatch('[0-9a-fA-F:.]+',address):raise
     if not 1<=peer_port<=65535:raise ValueError('Invalid peer port')
     reserved=[int(x.strip()) for x in b.get('reserved','0,0,0').split(',')]
     if len(reserved)!=3 or any(not 0<=x<=255 for x in reserved):raise ValueError('Invalid reserved bytes')
@@ -2713,7 +2779,7 @@ def gateway(profile,port,target,binary):
          'dns':{'servers':[{'type':'https','tag':'warp-dns','server':'1.1.1.1','path':'/dns-query','detour':'warp-wg'},{'type':'local','tag':'bootstrap'}]},
          'route':{'final':'warp-wg','default_domain_resolver':'warp-dns'}}
     try:ipaddress.ip_address(address)
-    except ValueError:cfg['endpoints'][0]['domain_resolver']='bootstrap'
+    except ValueError:cfg['endpoints'][0]['domain_resolver']={'server':'bootstrap',**({'strategy':'ipv'+family+'_only'} if family!='auto' else {})}
     fd,tmp=tempfile.mkstemp(dir=target.parent)
     try:
         with os.fdopen(fd,'w') as f:json.dump(cfg,f)
@@ -2758,7 +2824,7 @@ if __name__=='__main__':
         except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):
             raise SystemExit('Relay operation failed; check protocol fields, trusted certificate and landing connectivity. TLS verification remains required.') from None
     elif action=='restore':restore_routing(base,conf,Path(args[0]),binary)
-    elif action=='gateway':gateway(args[0],int(args[1]),base/'warp-gateway.json',binary)
+    elif action=='gateway':gateway(args[0],int(args[1]),base/'warp-gateway.json',binary,args[2] if len(args)>2 else 'auto')
     elif action=='port':
         state=read_state(base)
         if not state or state.get('provider','warp')!='warp':raise ValueError('WARP routing is not configured; current provider is relay')
@@ -2902,7 +2968,8 @@ PY_CLIENT_OWNER
 }
 warp_import_gateway(){
  check_owned && warp_guard || return 1
- local profile port saved active=false udp=true domains
+ local profile port saved active=false udp=true domains native=${1:-auto} routing=${2:-restricted}
+ [[ $native == auto || $native == 4 || $native == 6 ]] && [[ $routing == global || $routing == restricted ]] || return 1
  prompt_read "$(L '已有 WARP WireGuard 配置路径（私密文件）：' 'Existing WARP WireGuard profile path (private): ')" profile || return 0
  [[ -f $profile && ! -L $profile ]] || return 1
  prompt_read "$(L '共享本机代理端口 [40000]：' 'Shared local proxy port [40000]: ')" port || return 0; port=${port:-40000}
@@ -2916,7 +2983,7 @@ warp_import_gateway(){
  if ss -H -ltn "( sport = :$port )" | grep -q .; then
   if [[ $active != true ]] || [[ $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["inbounds"][0]["listen_port"])' "$BASE/warp-gateway.json") != "$port" ]]; then rm -rf "$saved";err "$(L '代理端口已被占用' 'Proxy port occupied')";return 1;fi
  fi
- if ! warp_engine gateway "$profile" "$port"; then rm -rf "$saved"; return 1; fi
+ if ! warp_engine gateway "$profile" "$port" "$native"; then rm -rf "$saved"; return 1; fi
  if [[ $active == true ]]; then if ! systemctl stop skybyte-warp-gateway.service; then cp "$saved/gateway.json" "$BASE/warp-gateway.json";rm -rf "$saved";return 1;fi;fi
  cat >"$SYSTEMD_DIR/skybyte-warp-gateway.service" <<UNIT
 [Unit]
@@ -2940,7 +3007,7 @@ UNIT
   rm -rf "$saved"; err "$(L '网关验证失败，已恢复此前网关' 'Gateway verification failed; previous gateway restored')"; return 1
  fi
  rm -rf "$saved"; domains=$(warp_engine defaults) || return 1
- warp_switch restricted "$port" "$udp" "$domains"
+ warp_switch "$routing" "$port" "$udp" "$domains"
 }
 warp_dualstack(){
  local port trace family ips ip
@@ -3979,6 +4046,248 @@ PY_GPG_EXPORT
   0) return 0;; *) return 1;;
  esac
 }
+rescue_engine(){
+ python3 - "$@" <<'PY_RESCUE'
+"""Restricted-network helpers; never change host DNS, routing or trust settings."""
+import hashlib
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import shutil
+import socket
+import subprocess
+import tarfile
+import tempfile
+
+
+def architecture(machine,component):
+    names={'x86_64':'amd64','aarch64':'arm64','arm64':'arm64','i386':'386','i486':'386','i586':'386','i686':'386',
+           'armv7l':'armv7' if component=='sing-box' else 'arm'}
+    if component not in ('sing-box','cloudflared') or machine not in names:raise ValueError('Unsupported Linux architecture')
+    return names[machine]
+
+
+def family():
+    available=[]
+    for version,target in (('4','1.1.1.1'),('6','2606:4700:4700::1111')):
+        try:
+            r=subprocess.run(['ip','-'+version,'route','get',target],capture_output=True,timeout=3)
+            if r.returncode==0:available.append(version)
+        except (OSError,subprocess.SubprocessError):pass
+    return available[0] if len(available)==1 else 'auto'
+
+
+def public_address(text):
+    if not isinstance(text,str) or not text or len(text)>253:raise ValueError('Invalid public address')
+    try:
+        value=ipaddress.ip_address(text)
+        if not value.is_global:raise ValueError('A public address is required')
+        return str(value)
+    except ValueError:
+        if not re.fullmatch(r'(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}',text):raise ValueError('Supply a public IP or hostname') from None
+        return text.lower()
+
+
+def verified_asset(directory,component,version,machine,destination):
+    root=Path(directory)
+    if not root.is_absolute() or root.is_symlink() or not root.is_dir():raise ValueError('Use an absolute trusted offline directory')
+    arch=architecture(machine,component)
+    if component=='sing-box':
+        if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+',version):raise ValueError('Invalid core version')
+        name=f'sing-box-{version}-linux-{arch}.tar.gz';metadata=root/f'sing-box-{version}-release.json';tag='v'+version;repo='SagerNet/sing-box'
+    else:
+        name='cloudflared-linux-'+arch;metadata=root/'cloudflared-release.json';repo='cloudflare/cloudflared';tag=None
+    if metadata.is_symlink() or not metadata.is_file() or metadata.stat().st_size>4194304:raise ValueError('Missing offline release metadata')
+    release=json.loads(metadata.read_text())
+    if release.get('draft') or release.get('prerelease'):raise ValueError('Stable release required')
+    if tag and release['tag_name']!=tag:raise ValueError('Wrong offline core version')
+    tag=release['tag_name']
+    if component=='cloudflared' and not re.fullmatch(r'[0-9]{4}\.[0-9]+\.[0-9]+',tag):raise ValueError('Invalid cloudflared release')
+    asset=next(a for a in release['assets'] if a['name']==name)
+    if asset['browser_download_url']!=f'https://github.com/{repo}/releases/download/{tag}/{name}':raise ValueError('Wrong release asset origin')
+    digest=asset.get('digest','')
+    if not re.fullmatch(r'sha256:[a-fA-F0-9]{64}',digest):raise ValueError('Offline SHA256 required')
+    source=root/name
+    if source.is_symlink() or not source.is_file() or source.stat().st_size>268435456:raise ValueError('Missing/unsafe offline asset')
+    data=source.read_bytes()
+    if hashlib.sha256(data).hexdigest()!=digest[7:].lower():raise ValueError('Offline asset digest mismatch')
+    target=Path(destination)
+    if target.is_symlink():raise ValueError('Destination symlink')
+    if component=='sing-box':
+        # Extract only the expected regular binary, never archive paths or links.
+        with tarfile.open(source,'r:gz') as archive:
+            member=archive.getmember(f'sing-box-{version}-linux-{arch}/sing-box')
+            if not member.isfile() or member.size>268435456:raise ValueError('Invalid archived binary')
+            data=archive.extractfile(member).read()
+    fd,tmp=tempfile.mkstemp(dir=target.parent)
+    try:
+        with os.fdopen(fd,'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+        os.chmod(tmp,0o755);os.replace(tmp,target)
+    finally:
+        if os.path.exists(tmp):os.unlink(tmp)
+
+
+def argo_options(state,edge,transport):
+    if edge not in ('auto','4','6') or transport not in ('auto','quic','http2'):raise ValueError('Invalid Argo transport settings')
+    state=dict(state);state.update(edge_ip_version=edge,transport=transport)
+    return state
+
+
+def edge_probe(version):
+    # A successful TCP connect is only TCP reachability, not a registered tunnel.
+    af={'4':socket.AF_INET,'6':socket.AF_INET6,'auto':socket.AF_UNSPEC}[version]
+    successes=0
+    for host in ('region1.v2.argotunnel.com','region2.v2.argotunnel.com'):
+        try:
+            candidates=socket.getaddrinfo(host,7844,af,socket.SOCK_STREAM)
+            for fam,kind,proto,_,address in candidates[:4]:
+                try:
+                    with socket.socket(fam,kind,proto) as sock:
+                        sock.settimeout(2);sock.connect(address)
+                    successes+=1;break
+                except OSError:pass
+        except OSError:pass
+    return successes
+
+
+if __name__=='__main__':
+    import sys
+    action,*args=sys.argv[1:]
+    try:
+        if action=='family':print(family())
+        elif action=='arch':print(architecture(*args))
+        elif action=='address':print(public_address(args[0]))
+        elif action=='asset':verified_asset(*args)
+        elif action=='edge':print(edge_probe(args[0]))
+        elif action=='options':
+            path=Path(args[0])
+            if path.is_symlink():raise ValueError('Argo state symlink')
+            data=argo_options(json.loads(path.read_text()),*args[1:]);fd,tmp=tempfile.mkstemp(dir=path.parent)
+            with os.fdopen(fd,'w') as f:json.dump(data,f,indent=2)
+            os.replace(tmp,path)
+        else:raise ValueError('Unknown restricted-network operation')
+    except (ValueError,KeyError,TypeError,OSError,StopIteration,tarfile.TarError):
+        raise SystemExit('Restricted-network validation failed / 受限网络参数或离线文件校验失败') from None
+PY_RESCUE
+}
+rescue_dependencies(){
+ local name missing=false
+ for name in curl python3 sha256sum tar ss flock;do command -v "$name" >/dev/null || missing=true;done
+ if [[ $missing == true ]];then
+  [[ -z ${SKYBYTE_ASSET_DIR:-} ]] || { err "$(L '离线模式缺少依赖；请先从发行版软件源安装 curl、python3、coreutils、tar、iproute2 和 util-linux。' 'Offline dependencies missing: install curl, python3, coreutils, tar, iproute2 and util-linux from distro packages first.')";return 1; }
+  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl ca-certificates python3 coreutils tar iproute2 util-linux || return 1
+ fi
+ if ! require_cmd systemctl || ! systemctl show --property=Version --value >/dev/null;then err "$(L '需要运行中的 systemd；不支持无 systemd 的容器。' 'A running systemd is required; containers without systemd are unsupported.')";return 1;fi
+}
+rescue_bootstrap_core() (
+ local stage='' committed=false final_bin=$BIN final_conf=$CONF final_meta=$META final_base=$BASE name bind_family listen base_existed=false
+ trap installation_cleanup EXIT
+ need_root
+ # shellcheck source=/dev/null
+ . "$OS_RELEASE"
+ case ${ID:-} in ubuntu|debian);;*) err 'Ubuntu/Debian required';return 1;;esac
+ for name in "$CONF" "$META" "$BIN" "$SYSTEMD_DIR/sing-box.service";do [[ ! -e $name && ! -L $name ]] || { err "$(L '已有配置或内核，拒绝覆盖' 'Existing configuration/core; refusing overwrite')";return 1; };done
+ command -v sing-box >/dev/null && { err 'Existing sing-box found';return 1; }
+ [[ ! -L $BASE && ( ! -e $BASE || -d $BASE ) ]] || { err "$(L '管理数据目录异常，拒绝写入' 'Manager data path is unsafe; refusing writes')";return 1; }
+ argo_guard || return 1
+ for name in argo-state.json argo-server.json argo.token argo-empty.yml cloudflared;do [[ ! -e $BASE/$name ]] || return 1;done
+ if systemctl list-unit-files sing-box.service --no-legend 2>/dev/null | grep -q sing-box;then return 1;fi
+ warn "$(L '将安装仅含回环 WS 节点的 Argo 依赖，不占用公网 443、不查询公网 IP。需要能下载官方软件并主动连接 Cloudflare。' 'Bootstraps a loopback-only Argo origin, without public port 443 or public-IP lookup. Official downloads and outbound Cloudflare connectivity are required.')"
+ confirm "$(L '准备 Argo 应急部署？' 'Prepare standalone Argo deployment?')" || return 2
+ rescue_dependencies || return 1
+ [[ ! -d $BASE ]] || base_existed=true
+ mkdir -p "$BASE" "$(dirname "$BIN")" "$(dirname "$CONF")" || return 1
+ [[ $base_existed == true ]] || chmod 700 "$BASE" || return 1
+ bind_family=$(rescue_engine family) || return 1
+ case $bind_family in 4)listen=0.0.0.0;;6)listen=::;;*)listen=::;;esac
+ stage=$(mktemp -d "$BASE/install.XXXXXX") || return 1
+ mkdir -m 700 "$stage/config"
+ download_binary "$CORE_RECOMMENDED" "$stage/sing-box" || return 1
+ python3 - "$stage" "$listen" <<'PY_RESCUE_CORE'
+import json,pathlib,sys
+p=pathlib.Path(sys.argv[1])
+(p/'config/config.json').write_text(json.dumps({'log':{'level':'warn'},'inbounds':[],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}))
+(p/'state.json').write_text(json.dumps({'deployment':'argo-only','node_name':'SKYBYTE','mode':'0','cert_mode':'0','cert_path':'','managed_certificates':[],'ip':'127.0.0.1','listen':sys.argv[2],'hop':False}))
+PY_RESCUE_CORE
+ "$stage/sing-box" check -c "$stage/config/config.json" || return 1
+ installation_commit "$stage" "$BIN" "$CONF" "$META" "$BASE" || return 1
+ setup_service || return 1
+ systemctl disable --now sing-box.service || return 1
+ committed=true
+)
+admin_restart(){
+ if python3 - "$CONF" <<'PY_ADMIN_LISTENER'
+import json,sys
+sys.exit(0 if json.load(open(sys.argv[1])).get('inbounds') else 1)
+PY_ADMIN_LISTENER
+ then systemctl restart sing-box && service_healthy
+ else systemctl disable --now sing-box.service;fi
+}
+argo_network_settings(){
+ argo_guard || return 1
+ [[ -f $BASE/argo-state.json ]] || return 1
+ local edge transport snap active=false
+ prompt_options 'Cloudflare 连接地址族：1 自动  2 IPv4  3 IPv6' 'Cloudflare address family: 1 Auto  2 IPv4  3 IPv6'
+ prompt_read '> ' edge || return 0
+ case ${edge:-1} in 1) edge=auto;;2) edge=4;;3) edge=6;;*) return 1;;esac
+ prompt_options '隧道传输：1 自动  2 QUIC/UDP 7844  3 HTTP2/TCP 7844' 'Tunnel transport: 1 Auto  2 QUIC/UDP 7844  3 HTTP2/TCP 7844'
+ prompt_read '> ' transport || return 0
+ case ${transport:-1} in 1) transport=auto;;2) transport=quic;;3) transport=http2;;*) return 1;;esac
+ warn "$(L '重启临时隧道会更换域名，需要重新导入节点。HTTP2 仍需出站 TCP 7844，不能通过 TCP 443 代替。' 'Restarting a Quick Tunnel changes its hostname; re-import the node. HTTP2 still requires outbound TCP 7844, not TCP 443.')"
+ confirm "$(L '应用隧道网络设置？' 'Apply tunnel network settings?')" || return 0
+ snap=$(backup) || return 1
+ systemctl is-active --quiet skybyte-argo-tunnel.service && active=true
+ [[ $active != true ]] || argo_stop || return 1
+ rescue_engine options "$BASE/argo-state.json" "$edge" "$transport" || return 1
+ if [[ $active == true ]] && ! argo_start;then
+  argo_stop || :;cp "$snap/argo-state.json" "$BASE/argo-state.json";argo_clear_ready;argo_start || :
+  err "$(L '新设置未连接，已恢复原设置；临时域名仍可能变化。' 'New settings failed; previous settings restored. Quick hostname may still change.')";return 1
+ fi
+ ok "$(L '隧道网络设置已保存' 'Tunnel network settings saved')"
+}
+rescue_help(){
+ say '受限网络部署：独立 Argo 不要求公网入站端口；NAT 的直连节点需要服务商实际映射。' 'Restricted networks: standalone Argo needs no public inbound ports; direct NAT nodes need actual provider mappings.'
+ say 'Argo 临时隧道只用于应急代理连通，不是 SSH/主机救援通道；Quick Tunnel 仅适合测试，地址、并发和可用性均无保证。' 'Argo Quick Tunnel can temporarily restore proxy connectivity; it is not SSH/host recovery. Quick Tunnels are for testing, with no hostname, concurrency or uptime guarantee.'
+ say '纯 IPv6：Argo 自动选择 IPv6；访问仅 IPv4 网站需可用的双栈 WARP 网关。导入配置的 Peer Endpoint 必须能经原生网络到达。' 'IPv6-only: Argo selects IPv6; IPv4-only sites need a working dual-stack WARP gateway. The imported Peer Endpoint must be reachable over native networking.'
+ say 'GitHub 无法下载时：从可信机器取回对应架构的 sing-box 与 cloudflared 官方文件及 Release API 元数据，复制到同一离线目录；软件包依赖仍需已安装或能访问 Debian/Ubuntu 软件源。' 'If GitHub downloads fail: copy architecture-matched official sing-box/cloudflared files and their Release API metadata into one offline directory. System dependencies must already exist or be available from Debian/Ubuntu repositories.'
+ say '支持 Ubuntu/Debian + systemd，内核下载支持 amd64/arm64/armv7/386；小内存机器只启用需要的服务，不能保证任意架构或内存容量。' 'Requires Ubuntu/Debian + systemd. Downloads support amd64/arm64/armv7/386; enable only needed services on small systems. Arbitrary architectures/capacity are not guaranteed.'
+ say 'Argo 使用 VLESS+WS+TLS，不能透传 HY2/QUIC。Cloudflare 出站需要 TCP 或 UDP 7844；HTTP2 仍使用 TCP 7844，不会回退到 443。' 'Argo uses VLESS+WS+TLS and cannot carry HY2/QUIC. Cloudflare egress requires TCP or UDP 7844; HTTP2 still uses TCP 7844 and does not fall back to 443.'
+}
+rescue_menu(){
+ local choice mode host vp hp directory edge
+ prompt_options $' 1. Argo 临时隧道应急部署\n 2. Argo 固定隧道部署\n 3. 自定义监听端口安装（IPv6 / NAT）\n 4. NAT 公网地址与映射端口\n 5. Argo 地址族与传输设置\n 6. WARP 双栈补全\n 7. 检查 Cloudflare 出站 TCP 7844\n 8. 使用离线官方安装包\n 9. 使用说明\n 0. 返回' $' 1. Standalone Argo Quick Tunnel\n 2. Standalone Argo Named Tunnel\n 3. Install with custom ports (IPv6/NAT)\n 4. NAT public address and mapped ports\n 5. Argo address family/transport\n 6. WARP dual-stack egress\n 7. Check Cloudflare outbound TCP 7844\n 8. Use offline official assets\n 9. Usage guide\n 0. Back'
+ prompt_read '> ' choice || return 0
+ case $choice in
+  1) argo_install quick;;2) argo_install named;;
+  3) prompt_options '1 Reality  2 HY2  3 双协议' '1 Reality  2 HY2  3 Dual';prompt_read '> ' mode || return 0;install_protocol "$mode" custom;;
+  4) check_owned || return 1
+   prompt_read "$(L 'NAT 公网 IP / 域名：' 'NAT public IP/hostname: ')" host || return 0
+   host=$(rescue_engine address "$host") || return 1
+   prompt_read "$(L '公网 Reality TCP 端口 [0=本机端口]：' 'Public Reality TCP port [0=local port]: ')" vp || return 0
+   prompt_read "$(L '公网 HY2 UDP 端口 [0=本机端口]：' 'Public HY2 UDP port [0=local port]: ')" hp || return 0
+   warn "$(L '只更新管理员节点导出；不会替服务商创建 NAT。受限用户端口需单独映射，HY2 证书身份保持原值，跳跃将关闭。' 'Updates admin exports only; does not create provider NAT. User ports need separate mappings; HY2 certificate identity is retained and hopping is disabled.')"
+   confirm "$(L '保存 NAT 导出设置？' 'Save NAT export settings?')" && configuration_apply nat_exports "$host" "${vp:-0}" "${hp:-0}";;
+  5) argo_network_settings;;
+  6) check_owned || return 1;edge=$(rescue_engine family) || return 1
+   say '使用你已有的合法 WARP WireGuard 双栈配置；原生 IPv6 必须使用 IPv6 Peer Endpoint。默认 MTU 1280，无需 /dev/net/tun。' 'Use your own valid dual-stack WARP WireGuard profile. Native IPv6 needs an IPv6 Peer Endpoint. Default MTU 1280; no /dev/net/tun is required.'
+   warn "$(L '补全仅作用于托管节点；全局 WARP 会改变这些节点的出口，不修改系统默认路由。' 'Completion applies only to managed nodes. Global WARP changes their egress, without changing the system default route.')"
+   prompt_options '1 全部节点流量走 WARP  2 仅流媒体与 AI 域名' '1 All node traffic via WARP  2 Media/AI domains only';prompt_read '> ' mode || return 0
+   case $mode in 1) mode=global;;2) mode=restricted;;*) return 1;;esac
+   warp_import_gateway "$edge" "$mode" && warp_dualstack;;
+  7) edge=$(rescue_engine family);say "原生路由选择：$edge" "Native route selection: $edge"
+   edge=$(rescue_engine edge "$edge") || return 1
+   say "Cloudflare 入口 TCP 7844 可连接数量：$edge/2；UDP 和隧道注册尚未验证。" "Reachable Cloudflare TCP 7844 endpoints: $edge/2; UDP and tunnel registration remain unverified.";;
+  8) say '文件名：sing-box-1.14.3-linux-<架构>.tar.gz、sing-box-1.14.3-release.json、cloudflared-linux-<架构>、cloudflared-release.json。' 'Files: sing-box-1.14.3-linux-<arch>.tar.gz, sing-box-1.14.3-release.json, cloudflared-linux-<arch>, cloudflared-release.json.'
+   prompt_read "$(L '可信离线安装包目录（绝对路径；回车取消）：' 'Trusted offline asset directory (absolute; Enter cancels): ')" directory || return 0
+   [[ -n $directory ]] || return 0
+   [[ $directory == /* && -d $directory && ! -L $directory ]] || return 1
+   export SKYBYTE_ASSET_DIR=$directory
+   say '已为当前脚本会话启用离线目录；下次运行需要重新选择。元数据与软件包都必须来自可信来源，校验不证明元数据本身未被篡改。' 'Offline directory enabled for this session; select it again next run. Both metadata and assets must be trusted; a checksum does not authenticate altered metadata.';;
+  9) rescue_help;;0) return 0;;*) return 1;;
+ esac
+}
 
 configuration_guard(){
  check_owned || return 1
@@ -4034,6 +4343,16 @@ if action=='ports':
 elif action=='address':
  value=address(args[0])
  for _,_,_,s in paths:s['ip']=value
+elif action=='nat_exports':
+ value=address(args[0]);ports=[]
+ try:public_ip=ipaddress.ip_address(value)
+ except ValueError:public_ip=None
+ if public_ip is not None and not public_ip.is_global:raise ValueError('Supply a public NAT address')
+ for item in args[1:]:
+  if not item.isdecimal() or len(item)>5 or not 0<=int(item)<=65535:raise ValueError('Invalid public mapped port')
+  ports.append(int(item))
+ if len(ports)!=2:raise ValueError('Two mapped ports required')
+ meta['ip']=value;meta['export_ports']=dict(zip(('vless','hysteria2'),ports))
 elif action=='sni':
  value=address(args[0])
  if not any(i['type']=='vless' for i in main['inbounds']):raise ValueError('Reality is not installed')
@@ -4051,17 +4370,31 @@ elif action in ('add','remove'):
  protocol=args[0]
  if protocol not in ('vless','hysteria2'):raise ValueError('Unsupported protocol')
  existing={i['type'] for i in main['inbounds']}
+ bootstrap=action=='add' and not existing and meta.get('deployment')=='argo-only'
  if action=='remove':
   if protocol not in existing or len(existing)<2:raise ValueError('Cannot remove the final protocol')
   for _,cfg,_,_ in paths:cfg['inbounds']=[i for i in cfg['inbounds'] if i['type']!=protocol]
  else:
-  if protocol in existing:raise ValueError('Protocol already installed')
+  if protocol in existing or (not existing and not bootstrap):raise ValueError('No managed base protocol to extend')
   value=port(args[1])
-  with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',value))
+  listen=main['inbounds'][0]['listen'] if existing else meta.get('listen','0.0.0.0')
+  if bootstrap:
+   required=5 if protocol=='vless' else 6 if len(args)>3 and args[3]=='selfsigned' else 7
+   if len(args)<required:raise ValueError('Initial direct node needs an advertised address and bind family')
+   public=args[-2];listen=args[-1]
+   if listen not in ('::','0.0.0.0'):raise ValueError('Invalid listener family')
+   meta.update(ip=address(public),listen=listen,uuid=str(uuid.uuid4()),hy2_password=secrets.token_urlsafe(32))
+   meta.pop('deployment',None)
+  family=socket.AF_INET6 if ':' in listen else socket.AF_INET
+  sock=socket.socket(family,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM)
+  try:
+   if family==socket.AF_INET6:sock.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+   sock.bind(('::' if family==socket.AF_INET6 else '0.0.0.0',value))
+  finally:sock.close()
   if protocol=='vless':
    sni=address(args[2]);pairs=subprocess.check_output([binary,'generate','reality-keypair'],text=True);keys=dict(line.split(': ',1) for line in pairs.strip().splitlines())
    meta.update(public_key=keys['PublicKey'],sid=secrets.token_hex(4),sni=sni)
-   template={'type':'vless','tag':'reality','listen':main['inbounds'][0]['listen'],'listen_port':value,'users':[{'name':'user1','uuid':meta['uuid'],'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':keys['PrivateKey'],'short_id':[meta['sid']]}}}
+   template={'type':'vless','tag':'reality','listen':listen,'listen_port':value,'users':[{'name':'user1','uuid':meta['uuid'],'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':keys['PrivateKey'],'short_id':[meta['sid']]}}}
   else:
    domain=address(args[2]);cert_mode='2'
    if args[3]=='selfsigned':
@@ -4077,7 +4410,7 @@ elif action in ('add','remove'):
     meta['managed_certificates']=list(dict.fromkeys(meta.get('managed_certificates',[])+list(generated_cert)))
    else:cert,key=args[3:5]
    meta.update(domain=domain,cert_path=generated_cert[0] if generated_cert else cert,cert_mode=cert_mode)
-   template={'type':'hysteria2','tag':'hy2','listen':main['inbounds'][0]['listen'],'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
+   template={'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
   main['inbounds'].append(template)
   for p,cfg,_,s in paths[1:]:
    with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',cfg['inbounds'][0]['listen_port']))
@@ -4115,8 +4448,8 @@ def tls_check(i):
 
 planned=list(generated)
 for n,(p,cfg,mp,s) in enumerate(paths):
- types={i['type'] for i in cfg['inbounds']};s['mode']='3' if len(types)==2 else '1' if 'vless' in types else '2'
- if not cfg['inbounds']:raise ValueError('Account would have no protocol')
+ types={i['type'] for i in cfg['inbounds']};s['mode']='0' if not types else '3' if len(types)==2 else '1' if 'vless' in types else '2'
+ if not cfg['inbounds'] and not (p==conf and s.get('deployment')=='argo-only'):raise ValueError('Account would have no protocol')
  # Persist own private certificate copies for quota-managed accounts.
  for i in cfg['inbounds']:
   if i['type']=='hysteria2':tls_check(i)
@@ -4142,7 +4475,12 @@ PY_CONFIG
 }
 configuration_apply(){
  configuration_guard && users_guard && warp_guard && argo_guard && hop_guard || return 1
- local stage snap admin=false users=false argo=false hop_active=false
+ local stage snap admin=false users=false argo=false hop_active=false first_admin=false
+ if python3 - "$CONF" "$META" <<'PY_INITIAL_ADMIN'
+import json,sys
+c=json.load(open(sys.argv[1]));s=json.load(open(sys.argv[2]));sys.exit(0 if not c.get('inbounds') and s.get('deployment')=='argo-only' else 1)
+PY_INITIAL_ADMIN
+ then first_admin=true;admin=true;fi
  stage=$(mktemp -d "$BASE/edit.XXXXXX") || return 1
  if ! configuration_engine "$stage" "$@";then rm -rf "$stage";return 1;fi
  if ! haproxy_engine check_configs "$stage";then rm -rf "$stage";return 1;fi
@@ -4151,11 +4489,12 @@ configuration_apply(){
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service;then users=true;users_stop || { rm -rf "$stage";return 1; };fi
  if [[ -f $BASE/argo-state.json ]] && systemctl is-active --quiet skybyte-argo-node.service;then argo=true;fi
  if [[ $(state hop) == True ]];then hop_active=true;hop_disable || { warp_resume "$admin" "$argo" "$users" || :;rm -rf "$stage";return 1; };fi
- if ! configuration_commit "$stage" || ! warp_resume "$admin" "$argo" "$users";then
+ if ! configuration_commit "$stage" || ! configuration_resume "$first_admin" "$admin" "$argo" "$users";then
   [[ $users != true ]] || users_stop || :
+  [[ $first_admin != true ]] || systemctl disable --now sing-box.service || :
   configuration_rollback "$stage" || :
   if [[ $hop_active == true ]];then systemctl start singbox-v2-hop.service || :;fi
-  warp_resume "$admin" "$argo" "$users" || :
+  warp_resume false "$argo" "$users" || :
   rm -rf "$stage";err "$(L '配置修改失败，已尝试恢复原配置' 'Configuration edit failed; original config restoration attempted')";return 1
  fi
  rm -rf "$stage"
@@ -4195,9 +4534,17 @@ for source,value,exists in json.loads((pathlib.Path(sys.argv[1])/'rollback.json'
  elif p.exists():p.unlink()
 PY_CONFIG_ROLLBACK
 }
+configuration_resume(){
+ local first_admin=$1 admin=$2 argo=$3 users=$4
+ if [[ $first_admin == true ]];then
+  setup_service && systemctl enable --now sing-box.service || return 1
+  admin=true
+ fi
+ warp_resume "$admin" "$argo" "$users"
+}
 node_settings(){
  check_owned || return 1
- local choice vp hp value protocol cert key domain up down ignore obfs
+ local choice vp hp value protocol cert key domain up down ignore obfs bootstrap=false public='' listen='' family
  prompt_options '1 修改主节点端口  2 服务器地址 / DDNS  3 Reality 握手域名  4 添加协议  5 移除协议  6 HY2 参数  7 使用已有 TLS 证书  0 返回' '1 Admin ports  2 Server address / DDNS  3 Reality handshake  4 Add protocol  5 Remove protocol  6 HY2 options  7 Existing TLS certificate  0 Back'
  prompt_read '> ' choice || return 0
  case $choice in
@@ -4211,22 +4558,39 @@ node_settings(){
    prompt_options '1 Reality + Vision  2 Hysteria2' '1 Reality + Vision  2 Hysteria2';prompt_read '> ' protocol || return 0
    case $protocol in 1) protocol=vless;;2) protocol=hysteria2;;*) return 1;;esac
    if [[ $choice == 5 ]];then confirm "$(L '移除所选协议，保留另一协议与用户额度？' 'Remove selected protocol, retaining the other and account quotas?')" && configuration_apply remove "$protocol";return;fi
+   if [[ $(python3 - "$CONF" "$META" <<'PY_INITIAL_NODE'
+import json,sys
+c=json.load(open(sys.argv[1]));s=json.load(open(sys.argv[2]));print('yes' if not c.get('inbounds') and s.get('deployment')=='argo-only' else 'no')
+PY_INITIAL_NODE
+   ) == yes ]];then
+    bootstrap=true
+    prompt_read "$(L '客户端使用的公网 IP / 域名：' 'Public IP/hostname used by clients: ')" public || return 0
+    public=$(rescue_engine address "$public") || { err "$(L '公网地址无效' 'Invalid public address')";return 1; }
+    family=$(rescue_engine family) || return 1
+    case $family in 4)listen=0.0.0.0;;6)listen=::;;*)listen=::;;esac
+    prompt_options '本机监听地址族：1 自动  2 IPv4  3 IPv6' 'Local bind family: 1 Auto  2 IPv4  3 IPv6'
+    prompt_read '> ' family || return 0
+    case ${family:-1} in 1);;2)listen=0.0.0.0;;3)listen=::;;*)return 1;;esac
+   fi
    prompt_read "$(L '管理员监听端口 [443]：' 'Admin listener port [443]: ')" value || return 0;value=${value:-443}
    if [[ $protocol == vless ]];then prompt_read 'Reality SNI [addons.mozilla.org]: ' domain || return 0
-    confirm "$(L '追加 Reality，保留现有凭据？' 'Add Reality, retaining existing credentials?')" && configuration_apply add vless "$value" "${domain:-addons.mozilla.org}"
+    if [[ $bootstrap == true ]];then confirm "$(L '添加直连 Reality 节点并保留独立 Argo 隧道？' 'Add a direct Reality node and retain the separate Argo tunnel?')" && configuration_apply add vless "$value" "${domain:-addons.mozilla.org}" "$public" "$listen"
+    else confirm "$(L '追加 Reality，保留现有凭据？' 'Add Reality, retaining existing credentials?')" && configuration_apply add vless "$value" "${domain:-addons.mozilla.org}";fi
    else
     prompt_options '1 自动自签名（无域名）  2 已有证书 / 托管 ACME' '1 Automatic self-signed (no domain)  2 Existing certificate / managed ACME'
     prompt_read '> ' protocol || return 0
     if [[ $protocol == 1 ]];then
-     domain=$(state ip) || return 1
-     confirm "$(L '自动生成自签名证书并追加 HY2？客户端仍需信任公开证书。' 'Generate self-signed TLS and add HY2? Clients still need public-certificate trust.')" && configuration_apply add hysteria2 "$value" "$domain" selfsigned
+     if [[ $bootstrap == true ]];then domain=$public;else domain=$(state ip) || return 1;fi
+     if [[ $bootstrap == true ]];then confirm "$(L '生成自签名证书并添加 HY2；保留独立 Argo 隧道？客户端仍需信任公开证书。' 'Generate self-signed TLS and add HY2 while retaining the separate Argo tunnel? Clients must trust the public certificate.')" && configuration_apply add hysteria2 "$value" "$domain" selfsigned "$public" "$listen"
+     else confirm "$(L '自动生成自签名证书并追加 HY2？客户端仍需信任公开证书。' 'Generate self-signed TLS and add HY2? Clients still need public-certificate trust.')" && configuration_apply add hysteria2 "$value" "$domain" selfsigned;fi
      return
     fi
     [[ $protocol == 2 ]] || return 1
     prompt_read "$(L '证书名称（域名或 IP）：' 'Certificate identity (domain or IP): ')" domain || return 0
     prompt_read 'TLS fullchain: ' cert || return 0;prompt_read 'TLS private key: ' key || return 0
     validate_certificate "$cert" "$key" "$domain" || return 1
-    confirm "$(L '追加 HY2，沿用证书并保留用户用量？' 'Add HY2 with this certificate, retaining user usage?')" && configuration_apply add hysteria2 "$value" "$domain" "$cert" "$key"
+    if [[ $bootstrap == true ]];then confirm "$(L '添加 HY2 并保留独立 Argo 隧道？' 'Add HY2 and retain the separate Argo tunnel?')" && configuration_apply add hysteria2 "$value" "$domain" "$cert" "$key" "$public" "$listen"
+    else confirm "$(L '追加 HY2，沿用证书并保留用户用量？' 'Add HY2 with this certificate, retaining account usage?')" && configuration_apply add hysteria2 "$value" "$domain" "$cert" "$key";fi
    fi;;
   6) prompt_read "$(L '上行 Mbps [0=自动]：' 'Upload Mbps [0=auto]: ')" up || return 0;prompt_read "$(L '下行 Mbps [0=自动]：' 'Download Mbps [0=auto]: ')" down || return 0
    prompt_options '1 按带宽设置  2 忽略客户端带宽（须上下行均为0）' '1 Use bandwidth settings  2 Ignore client bandwidth (both must be 0)';prompt_read '> ' ignore || return 0
@@ -4751,6 +5115,7 @@ sub_menu(){
    say ' 3. 安装双协议' ' 3. Install both protocols'
    say ' 4. Argo 临时 / 固定隧道管理' ' 4. Argo Quick / Named Tunnel controls'
    say ' 5. 节点参数与协议增删' ' 5. Node settings and protocol changes'
+   say ' 6. 受限网络部署（Argo / IPv6 / NAT）' ' 6. Restricted networks (Argo / IPv6 / NAT)'
    ;;
   2)
    say ' 1. 查看节点与各客户端格式' ' 1. View nodes and client formats'
@@ -4803,6 +5168,7 @@ sub_menu(){
   1:3) MAIN_ACTION=install_dual;;
   1:4) MAIN_ACTION=argo;;
   1:5) MAIN_ACTION=settings;;
+  1:6) MAIN_ACTION=rescue;;
   2:1) MAIN_ACTION=nodes;;
   2:2) MAIN_ACTION=subscription;;
   2:3) MAIN_ACTION=rename;;
@@ -4844,6 +5210,7 @@ dispatch_action(){
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
  media) media_check;; warp) warp_menu;; relay) relay_menu;; haproxy) haproxy_menu;;
+ rescue) rescue_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
  update) core_versions;; settings) node_settings;; online) online_menu;; acme) acme_menu;; backup_tools) backup_tools;; help) usage_help;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;

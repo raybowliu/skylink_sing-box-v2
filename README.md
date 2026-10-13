@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.6 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
+# SKYBYTE Manager V2.8.0 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
 
 **SKYBYTE Manager** 是基于 Bash 的 Ubuntu/Debian VPS 管理工具，提供简体中文和 English 界面，支持 sing-box 的 **VLESS + Reality + Vision、Hysteria2（HY2）及双协议部署**。通过交互菜单管理 Cloudflare Argo 隧道、WARP 出站分流、用户流量配额与有效期，并导出 Shadowrocket（小火箭）、v2rayN、Clash Verge/Mihomo/OpenClash 和 sing-box JSON 客户端配置。
 
@@ -14,6 +14,7 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 - [菜单与功能](#菜单与功能)
 - [Hysteria2 / HY2 与安全证书验证](#hysteria2--hy2-与安全证书验证)
 - [Cloudflare Argo 临时 / 固定隧道](#argo-临时--固定隧道)
+- [受限网络部署：Argo 应急、IPv6 与 NAT](#受限网络部署argo-应急ipv6-与-natv28)
 - [用户数量、流量与有效期](#用户数量流量与有效期)
 - [WARP 出站与双栈](#warp-出站与双栈v24)
 - [个人 HTTPS 在线订阅](#每人独立-https-在线订阅v25)
@@ -24,7 +25,7 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 
 ## Ubuntu/Debian VPS 一键安装
 
-需要 root、Ubuntu/Debian、systemd 和可用的公网 IPv4 或 IPv6；支持 x86_64/arm64。请以 root 账号登录 VPS 后执行，保留 `install.sh` 一键入口：
+需要 root、Ubuntu/Debian 和 systemd。常规公网节点需要可用的公网 IPv4 或 IPv6；官方二进制映射支持 amd64、arm64、armv7 和 386。请以 root 账号登录 VPS 后执行，保留 `install.sh` 一键入口：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/skylink9119/sing-box-v2/main/install.sh -o install.sh
@@ -41,7 +42,7 @@ bash install.sh
 
 | 菜单 | 分类 | 功能 |
 | --- | --- | --- |
-| 1 | 节点安装 | Reality / HY2 / 双协议；临时 / 固定隧道；参数修改 / 协议增删 |
+| 1 | 节点安装 | Reality / HY2 / 双协议；临时 / 固定隧道；参数修改 / 协议增删；受限网络部署 |
 | 2 | 节点与订阅 | 节点信息 / 订阅导出 / 自定义名称 / 小火箭二维码 / 用户管理 / HTTPS个人订阅 |
 | 3 | 服务与日志 | 服务控制 / 日志 / Argo 状态 |
 | 4 | 服务器与网络 | 初始化 / UFW / 防火墙 / BBR / 跳跃 / 流量 / 资源 / 流媒体 / WARP / sing-box 中转 / HAProxy TCP 透传 |
@@ -138,6 +139,19 @@ GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审�
 
 支持状态、启动、停止、重启、刷新和卸载。注册成功不代表端到端可用；断开时不导出旧临时地址。Token 权限为 600，通过 `--token-file` 使用，不进入客户端导出，私密备份包含 Token。卸载保留账号隧道和 DNS，恢复后重新注册再导出。cloudflared 官方下载通过 SHA-256 校验。
 
+## 受限网络部署：Argo 应急、IPv6 与 NAT（V2.8）
+
+入口 **1 → 6**。此工具适用于公网入站被阻断、纯 IPv6 或需要手工配置 NAT 映射的 Ubuntu/Debian 主机。它不能恢复 SSH、修复主机网络或绕过已失效的所有出站连接：VPS 仍须能下载所需文件，并主动连接 Cloudflare。若完全失联，请先使用服务商控制台或救援系统恢复主机访问。
+
+- **1 / 2：独立 Argo 临时 / 固定隧道。** 没有现存管理配置时，脚本会先安装一个不监听公网端口的空 sing-box 核心，再创建仅绑定 `127.0.0.1` 的 VLESS + WebSocket 源站。它能在 Cloudflare 出站可用时提供代理入口，不会承载 HY2/QUIC。Quick Tunnel 不需要域名，但地址会变化；Cloudflare 将其限定为测试用途，不承诺 SLA、长期地址或生产可用性。固定隧道需要你预先配置 Cloudflare Tunnel、公开主机名及指向所选回环端口的路由；脚本不创建 DNS 或账号资源。
+- **临时部署后增加直连节点：** 进入 **1 → 5 → 4**，选择 Reality 或 HY2，填客户端使用的公网 IP/域名、监听地址族与端口。完成后 Argo 隧道仍单独保留。独立 Argo 本身不支持流量配额用户；先添加直连节点才能使用用户管理。
+- **3 / 4：纯 IPv6、非标准端口与 NAT。** 自定义部署可选择本机监听端口/地址族及客户端公布的公网地址。NAT 选项可把管理员节点导出地址和公网映射端口与本机端口分开。提供商必须实际创建对应 TCP/UDP 映射并放行端口；脚本不能替提供商配置 NAT、安全组或路由。受限用户节点不包含在管理员映射设置内，需要另行逐端口配置。HY2 证书身份须匹配客户端连接时使用的名称。
+- **5 / 7：Cloudflare 传输设置与连通检查。** Cloudflare Tunnel 出站需要 UDP 7844（QUIC）或 TCP 7844（HTTP/2）；HTTP/2 仍不使用 TCP 443。检测只测试所选地址族的 TCP 7844 可连接性，不能证明 UDP 可用、隧道已注册或客户端端到端连通。按 VPS 及云防火墙出站规则选择地址族/传输。
+- **6：WARP 双栈补全。** 导入你已有且可用的 WARP WireGuard 配置，脚本为托管节点建立网关，并可选择全局 WARP 或只让已选媒体/AI 域名走 WARP。它不改变系统默认路由，也不能在首次联网前替自己建立连接。原生 Peer Endpoint 必须能由当前网络访问；纯 IPv6 环境需要可用的 IPv6 Peer Endpoint。双栈检测只验证网关的 IPv4/IPv6 TCP 出口，不保证平台解锁。
+- **8：离线官方安装文件。** 在可信网络下载与 CPU 架构对应的官方 sing-box/cloudflared Release 文件及 Release API 元数据，复制到同一绝对路径目录。脚本按元数据 SHA-256 校验并仅提取目标二进制；元数据本身也必须从可信渠道取得。离线目录不包含 Debian/Ubuntu 依赖包：依赖须已安装或 VPS 仍能访问系统软件源。
+
+官方资产映射支持 amd64、arm64、armv7、386，不代表所有旧内核或极小内存机器都兼容；cloudflared、sing-box、WARP 网关及配额用户会增加资源占用，请只启用需要的组件并监控内存。配置/备份保留在 `/etc/singbox-v2/`；凭据和私钥不应公开。
+
 菜单 **2 → 4** 显示小火箭节点二维码，每个已安装且可导出的节点单独生成，用虚线分隔。使用小火箭扫码导入；缺少工具时安装 Ubuntu/Debian 的 `qrencode` 软件包。链接通过标准输入在本机编码，不保存二维码图片。HY2 自签名仍需配置信任证书，二维码请勿公开。
 
 新增小火箭专用链接文件 `shadowrocket-native-nodes.txt` 及 Base64 列表 `shadowrocket-native-subscription.txt`。VLESS 使用 Base64 地址和 remarks/peer/xtls 参数，参考 [Xboard 小火箭导出实现](https://github.com/cedar2025/Xboard/blob/master/app/Protocols/Shadowrocket.php)。菜单 2 → 4 使用专用链接生成二维码。原有标准文件保留，HY2 沿用开启验证的链接；专用格式尚未进行小火箭图形客户端实测。
@@ -173,7 +187,7 @@ GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审�
 
 ## 源码模块与构建
 
-维护源码在 `src/`：`manager.sh` 为基础服务及安装逻辑，`subscriptions.sh` 为订阅导出，`users.sh` 为用户界面/服务，`users.py` 为配额与诊断，`operations.sh` 为更新/证书/资源，`menu.sh` 为主菜单及启动入口；`hopping.sh` 管理 UDP 跳跃，`media.sh`/`media.py` 检测流媒体，`warp.sh`/`warp.py` 管理 WARP 网关与托管路由，`relay.sh` 提供 sing-box 住宅落地中转界面，`haproxy.sh`/`haproxy.py` 提供独立 TCP 透传；`configuration.sh`/`configuration.py` 编辑节点，`acme.sh` 管理证书申请，`online.sh`/`online.py` 提供HTTPS订阅，`reliability.sh`/`backup.py` 管理安装事务、版本与备份，`help.sh` 提供使用说明。运行 `python3 scripts/build.py` 生成完整 `singbox-v2.sh`；`python3 scripts/build.py --check` 检查是否同步。不要直接修改生成文件。
+维护源码在 `src/`：`manager.sh` 为基础服务及安装逻辑，`subscriptions.sh` 为订阅导出，`users.sh` 为用户界面/服务，`users.py` 为配额与诊断，`operations.sh` 为更新/证书/资源，`menu.sh` 为主菜单及启动入口；`rescue.sh`/`rescue.py` 管理受限网络、Argo 应急、离线资产及 IPv6/NAT 辅助，`hopping.sh` 管理 UDP 跳跃，`media.sh`/`media.py` 检测流媒体，`warp.sh`/`warp.py` 管理 WARP 网关与托管路由，`relay.sh` 提供 sing-box 住宅落地中转界面，`haproxy.sh`/`haproxy.py` 提供独立 TCP 透传；`configuration.sh`/`configuration.py` 编辑节点，`acme.sh` 管理证书申请，`online.sh`/`online.py` 提供 HTTPS 订阅，`reliability.sh`/`backup.py` 管理安装事务、版本与备份，`help.sh` 提供使用说明。运行 `python3 scripts/build.py` 生成完整 `singbox-v2.sh`；`python3 scripts/build.py --check` 检查是否同步。不要直接修改生成文件。
 
 安装仍只需 `install.sh`，部署的脚本自带所有模块，不在运行时下载或加载额外文件。`bash singbox-v2.sh --self-check` 无需 root，可检查内嵌 Python 语法并输出版本。systemd/UFW 操作使用隔离模拟测试；实际 VPS 部署仍需验证。
 

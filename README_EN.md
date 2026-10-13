@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.6 — sing-box Installer and Ubuntu/Debian VPS Management
+# SKYBYTE Manager V2.8.0 — sing-box Installer and Ubuntu/Debian VPS Management
 
 **SKYBYTE Manager** is a Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces. It installs sing-box with **VLESS + Reality + Vision, Hysteria2 (HY2), or both protocols**, manages Cloudflare Argo tunnels and WARP routing, and provides per-user traffic quotas and expiry. Client exports support Shadowrocket, v2rayN, Clash Verge/Mihomo/OpenClash and sing-box JSON.
 
@@ -14,6 +14,7 @@ The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential 
 - [Menu and features](#menu-and-features)
 - [Hysteria2 / HY2 and verified TLS](#hysteria2--hy2-and-verified-tls)
 - [Cloudflare Argo Quick / Named Tunnels](#argo-quick--named-tunnels)
+- [Restricted networks: Argo rescue, IPv6 and NAT](#restricted-networks-argo-rescue-ipv6-and-nat-v28)
 - [Account limits, traffic quotas and expiry](#account-limits-traffic-quotas-and-expiry)
 - [WARP egress and dual-stack](#warp-egress-and-dual-stack-v24)
 - [Personal HTTPS subscriptions](#independent-https-subscriptions-v25)
@@ -24,7 +25,7 @@ The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential 
 
 ## Ubuntu/Debian VPS installation
 
-Requires root, Ubuntu/Debian, systemd and a reachable public IPv4 or IPv6 address. Supports x86_64/arm64. Log in to the VPS as root and use the existing `install.sh` entry point:
+Requires root, Ubuntu/Debian and systemd. Direct public nodes need a reachable public IPv4 or IPv6 address. Official binary mappings cover amd64, arm64, armv7 and 386. Log in to the VPS as root and use the existing `install.sh` entry point:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/skylink9119/sing-box-v2/main/install.sh -o install.sh
@@ -41,7 +42,7 @@ Fresh installation uses the official sing-box 1.14.3 binary tested for this mana
 
 | Menu | Category | Functions |
 | --- | --- | --- |
-| 1 | Install nodes | Reality / HY2 / dual; Quick / Named; node edits / protocol changes |
+| 1 | Install nodes | Reality / HY2 / dual; Quick / Named; node edits / protocol changes; restricted-network setup |
 | 2 | Nodes and subscriptions | Information / exports / custom names / QR codes / accounts / personal HTTPS subscriptions |
 | 3 | Services and logs | Controls / logs / Argo status |
 | 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / resources / media / WARP / sing-box relay / HAProxy TCP passthrough |
@@ -142,6 +143,19 @@ Menu **2 → 4** displays one Shadowrocket node QR code per installed/exportable
 
 Shadowrocket native links are additionally saved in `shadowrocket-native-nodes.txt`, with a Base64 list in `shadowrocket-native-subscription.txt`. VLESS uses Base64 authority plus native remarks/peer/xtls parameters, following the [Xboard Shadowrocket exporter](https://github.com/cedar2025/Xboard/blob/master/app/Protocols/Shadowrocket.php). Menu 2 → 4 encodes these links. Standard files remain unchanged; HY2 keeps its existing verified-TLS URI. Native links have not been GUI-tested in Shadowrocket.
 
+## Restricted networks: Argo rescue, IPv6 and NAT (V2.8)
+
+Open **1 → 6** for an Ubuntu/Debian host with blocked inbound access, IPv6-only connectivity, or provider-managed NAT. This cannot restore SSH, repair host networking, or recover a machine with no usable outbound path. The VPS still needs access to required downloads and outbound Cloudflare connectivity. If the host is unreachable, first use the provider console or rescue environment.
+
+- **1 / 2: standalone Argo Quick / Named Tunnel.** With no existing managed installation, the manager stages an empty sing-box core without public listeners, then creates a VLESS + WebSocket origin bound only to `127.0.0.1`. It provides a proxy entry while Cloudflare egress works; it does not carry HY2/QUIC. Quick Tunnels need no domain, but their hostname changes. Cloudflare classifies them for testing and provides no SLA, stable hostname or production guarantee. Named mode requires you to configure a Cloudflare Tunnel, published hostname and route to the selected loopback port; the script does not create DNS or account resources.
+- **Add a direct node after standalone Argo:** open **1 → 5 → 4**, choose Reality or HY2, then enter the public client address, local bind family and port. The separate Argo tunnel remains installed. Standalone Argo alone cannot host quota-managed accounts; add a direct node before enabling account management.
+- **3 / 4: IPv6, custom ports and NAT.** Custom deployment lets you choose local ports/bind family and the address advertised to clients. The NAT export option separates the administrator node's public mapped ports/address from its local listener ports. Your provider must create the TCP/UDP mappings and allow the ports; the script cannot configure provider NAT, security groups or routes. Quota-user ports are not included and need separate mappings. HY2 certificate identity must match the name clients use to connect.
+- **5 / 7: Cloudflare transport and reachability check.** Tunnel egress requires UDP 7844 (QUIC) or TCP 7844 (HTTP/2); HTTP/2 does not use TCP 443. The check tests only TCP 7844 reachability for the selected address family. It cannot prove UDP reachability, tunnel registration or end-to-end client connectivity. Choose the family and transport allowed by the VPS/provider egress rules.
+- **6: WARP dual-stack completion.** Import your own working WARP WireGuard profile. The manager creates a gateway for managed node traffic and lets you select global WARP or WARP for selected media/AI domains. It leaves the system default route unchanged and cannot create its own first network path. The native Peer Endpoint must be reachable over the current network; IPv6-only hosts need a reachable IPv6 Peer Endpoint. Dual-stack checks verify only the gateway's IPv4/IPv6 TCP egress and do not promise service unlocking.
+- **8: offline official assets.** On a trusted network, obtain the official sing-box/cloudflared Release assets for the CPU architecture and their GitHub Release API metadata, then copy them into one absolute-path directory. The manager verifies SHA-256 against that metadata and extracts only the target binary; obtain the metadata through a trusted channel too. Offline assets do not contain Debian/Ubuntu packages: dependencies must already be installed or the VPS must still reach its OS package repository.
+
+Official asset mappings cover amd64, arm64, armv7 and 386; this does not guarantee compatibility with every old kernel or extremely small machine. cloudflared, sing-box, WARP gateways and quota users consume resources. Enable only what you need and watch memory. Private configs/backups remain under `/etc/singbox-v2/`; never publish credentials or private keys.
+
 Interactive startup and language changes show a bold green version/system summary: OS, kernel, architecture, virtualization, local IPv4/IPv6 interface addresses and service installation/running state. No startup geolocation request is made; the IP information entry has been removed. Missing optional probes do not prevent opening the menu.
 
 ## Account limits, traffic quotas and expiry
@@ -173,7 +187,7 @@ Backups include policies, usage, configurations and certificates. Restore retain
 
 ## Source modules and build
 
-Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), `warp.sh`/`warp.py` (gateway/owned routing), `relay.sh` (sing-box residential relay), `haproxy.sh`/`haproxy.py` (independent TCP passthrough), `configuration.sh`/`configuration.py` (node edits), `acme.sh` (issuance), `online.sh`/`online.py` (HTTPS delivery), `reliability.sh`/`backup.py` (transactions/versions/backups) and `help.sh` (guide). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
+Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `rescue.sh`/`rescue.py` (restricted networks, Argo rescue, offline assets and IPv6/NAT helpers), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), `warp.sh`/`warp.py` (gateway/owned routing), `relay.sh` (sing-box residential relay), `haproxy.sh`/`haproxy.py` (independent TCP passthrough), `configuration.sh`/`configuration.py` (node edits), `acme.sh` (issuance), `online.sh`/`online.py` (HTTPS delivery), `reliability.sh`/`backup.py` (transactions/versions/backups) and `help.sh` (guide). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
 
 The original `install.sh` entry remains sufficient: deployed scripts contain all modules and require no runtime module downloads. `bash singbox-v2.sh --self-check` checks embedded Python syntax and outputs the version without root. systemd/UFW operations are tested through isolated mocks; actual VPS deployment still needs verification.
 
