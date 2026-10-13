@@ -35,3 +35,10 @@ warp-client.json
 warp-profile.conf
 wgcf-account.toml
 wgcf-profile.conf
+
+subscriptions.json
+acme-state.json
+acme/
+core-version.json
+warp-rules.previous.json
+*.gpg

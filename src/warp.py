@@ -15,6 +15,7 @@ MEDIA=['netflix.com','netflix.net','nflxext.com','nflximg.com','nflximg.net','nf
        'disneyplus.com','disney-plus.net','dssott.com','bamgrid.com','youtube.com','youtu.be','googlevideo.com','ytimg.com','youtubei.googleapis.com',
        'primevideo.com','amazonvideo.com','aiv-cdn.net','aiv-delivery.net','tiktok.com','tiktokv.com','tiktokcdn.com','tiktokcdn-us.com','byteoversea.com','ibytedtos.com']
 AI=['openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','anthropic.com','claude.ai','claude.com']
+RULE_VERSION='2026.10.13'
 FIELDS=('route','outbounds')
 
 def atomic(path,data):
@@ -76,6 +77,19 @@ def domains_parse(text):
     domains=sorted(set(text.replace(',', ' ').split()))
     if not domains or len(domains)>200 or any(len(x)>253 or not re.fullmatch(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}',x) for x in domains):raise ValueError('Invalid domain suffix list')
     return sorted(set(d.lower() for d in domains))
+
+def catalog(base):
+    path=base/'warp-rules.json'
+    if path.is_symlink():raise ValueError('Rule catalog symlink')
+    d=json.loads(path.read_text()) if path.exists() else {'owner':'SKYBYTE WARP rules v1','schema':1,'version':RULE_VERSION,'media':MEDIA,'ai':AI}
+    validate_catalog(d)
+    return d
+
+def validate_catalog(d):
+    if d.get('owner')!='SKYBYTE WARP rules v1' or d.get('schema')!=1 or not re.fullmatch(r'[0-9]{4}\.[0-9]{2}\.[0-9]{2}(?:\.[0-9]+)?',d.get('version','')):raise ValueError('Invalid rule catalog')
+    if not isinstance(d['media'],list) or not isinstance(d['ai'],list) or any(not isinstance(x,str) for x in d['media']+d['ai']):raise ValueError('Invalid catalog suffixes')
+    domains_parse(' '.join(d['media']+d['ai']))
+
 
 def switch(base,conf,binary,mode,port,udp,domains):
     if mode not in ('direct','restricted','global') or not 1024<=port<=65535:raise ValueError('Invalid WARP mode/port')
@@ -207,6 +221,17 @@ if __name__=='__main__':
         state=read_state(base)
         if state:
             state['configs'].pop(str(base/'argo-server.json'),None);atomic(base/'warp-state.json',state)
-    elif action=='defaults':print(' '.join(MEDIA+AI))
+    elif action=='defaults':
+        d=catalog(base);print(' '.join(d['media']+d['ai']))
+    elif action=='catalog_status':
+        d=catalog(base);print('WARP rules: '+d['version']+' | suffixes: '+str(len(domains_parse(' '.join(d['media']+d['ai'])))))
+    elif action=='catalog_update':
+        p=Path(args[0])
+        if p.is_symlink() or p.stat().st_size>65536:raise ValueError('Invalid catalog file')
+        d=json.loads(p.read_text());validate_catalog(d)
+        current=catalog(base)
+        if tuple(map(int,d['version'].split('.'))) < tuple(map(int,current['version'].split('.'))):raise ValueError('Older catalog refused')
+        atomic(base/'warp-rules.previous.json',current);atomic(base/'warp-rules.json',d)
+        print('WARP rules: '+d['version'])
     elif action=='guard':read_state(base)
     else:raise ValueError('Unknown WARP action')

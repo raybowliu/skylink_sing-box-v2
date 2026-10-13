@@ -1,0 +1,146 @@
+"""Stage administrator/user inbound edits; preserve route ownership, credentials and usage."""
+import copy,ipaddress,json,os,pathlib,re,secrets,shutil,socket,subprocess,sys,uuid
+base,conf,binary,stage,action,*args=sys.argv[1:];base=pathlib.Path(base);conf=pathlib.Path(conf);stage=pathlib.Path(stage)
+def load(p):
+ if p.is_symlink() or p.parent.is_symlink():raise ValueError('Refusing config symlink')
+ return json.loads(p.read_text())
+def address(s):
+ try:ipaddress.ip_address(s);return s
+ except ValueError:
+  if len(s)>253 or not re.fullmatch(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}',s):raise ValueError('Invalid address/domain')
+  return s.lower()
+def port(s):
+ if not s.isdecimal() or len(s)>5 or not 1024<=int(s)<=65535:raise ValueError('Port requires 1024-65535')
+ return int(s)
+def write(p,d):
+ p.parent.mkdir(parents=True,exist_ok=True,mode=0o700);p.write_text(json.dumps(d,indent=2));p.chmod(0o600)
+generated=[];generated_cert=None
+main=load(conf);meta=load(base/'state.json');original=copy.deepcopy(main);old_meta=copy.deepcopy(meta);paths=[(conf,main,base/'state.json',meta)]
+if (base/'users.json').exists():
+ ledger=load(base/'users.json')
+ if ledger['owner']!='SKYBYTE user quotas v1':raise ValueError('Invalid user owner')
+ for u in ledger['users']:
+  if u.get('deleted'):continue
+  if not re.fullmatch('[0-9a-f]{16}',u['id']):raise ValueError('Invalid user ID')
+  p=base/'users'/u['id'];paths.append((p/'server.json',load(p/'server.json'),p/'state.json',load(p/'state.json')))
+
+# Any edit disables active host hopping; the wrapper stops owned rules.
+meta['hop']=False
+if action=='ports':
+ vp,hp=map(port,args)
+ for inbound in main['inbounds']:
+  value=vp if inbound['type']=='vless' else hp
+  if value==inbound['listen_port']:continue
+  if any(i['listen_port']==value and i['type']==inbound['type'] for _,cfg,_,_ in paths[1:] for i in cfg['inbounds']):raise ValueError('Port overlaps an account')
+  if inbound['type']=='hysteria2' and old_meta.get('hop') and old_meta['hop_start']<=value<=old_meta['hop_end']:raise ValueError('HY2 listener overlaps hopping range')
+  family=socket.SOCK_STREAM if inbound['type']=='vless' else socket.SOCK_DGRAM
+  # Dual-stack binds cover both families on Linux; IPv4 fallback for hosts without IPv6.
+  try:s=socket.socket(socket.AF_INET6,family);s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+  except OSError:s=socket.socket(socket.AF_INET,family)
+  with s:s.bind(('::' if s.family==socket.AF_INET6 else '0.0.0.0',value))
+  inbound['listen_port']=value
+elif action=='address':
+ value=address(args[0])
+ for _,_,_,s in paths:s['ip']=value
+elif action=='sni':
+ value=address(args[0])
+ if not any(i['type']=='vless' for i in main['inbounds']):raise ValueError('Reality is not installed')
+ for _,cfg,_,s in paths:
+  for i in cfg['inbounds']:
+   if i['type']=='vless':i['tls']['server_name']=value;i['tls']['reality']['handshake']['server']=value;s['sni']=value
+elif action=='tls':
+ domain,cert,key=args;domain=address(domain)
+ if 'hysteria2' not in {i['type'] for i in main['inbounds']}:raise ValueError('HY2 is not installed')
+ for _,cfg,_,s in paths:
+  for i in cfg['inbounds']:
+   if i['type']=='hysteria2':i['tls'].update(server_name=domain,certificate_path=cert,key_path=key);s.update(domain=domain,cert_path=cert,cert_mode='2')
+ # Managed user certificates will be copied from the selected chain on commit.
+elif action in ('add','remove'):
+ protocol=args[0]
+ if protocol not in ('vless','hysteria2'):raise ValueError('Unsupported protocol')
+ existing={i['type'] for i in main['inbounds']}
+ if action=='remove':
+  if protocol not in existing or len(existing)<2:raise ValueError('Cannot remove the final protocol')
+  for _,cfg,_,_ in paths:cfg['inbounds']=[i for i in cfg['inbounds'] if i['type']!=protocol]
+ else:
+  if protocol in existing:raise ValueError('Protocol already installed')
+  value=port(args[1])
+  with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',value))
+  if protocol=='vless':
+   sni=address(args[2]);pairs=subprocess.check_output([binary,'generate','reality-keypair'],text=True);keys=dict(line.split(': ',1) for line in pairs.strip().splitlines())
+   meta.update(public_key=keys['PublicKey'],sid=secrets.token_hex(4),sni=sni)
+   template={'type':'vless','tag':'reality','listen':main['inbounds'][0]['listen'],'listen_port':value,'users':[{'name':'user1','uuid':meta['uuid'],'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':keys['PrivateKey'],'short_id':[meta['sid']]}}}
+  else:
+   domain=address(args[2]);cert_mode='2'
+   if args[3]=='selfsigned':
+    dest_cert=conf.parent/'hy2-added.crt';dest_key=conf.parent/'hy2-added.key'
+    if any(p.exists() or p.is_symlink() for p in (dest_cert,dest_key)):raise ValueError('Generated certificate paths already exist; use existing-certificate mode')
+    cert=str(stage/'hy2-added.crt');key=str(stage/'hy2-added.key');exe=os.environ.get('OPENSSL_BIN','openssl')
+    try:ipaddress.ip_address(domain);san='IP:'+domain
+    except ValueError:san='DNS:'+domain
+    result=subprocess.run([exe,'req','-x509','-newkey','rsa:3072','-sha256','-nodes','-days','365','-subj','/CN='+domain,'-addext','subjectAltName='+san,'-addext','basicConstraints=critical,CA:TRUE','-addext','keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign','-keyout',key,'-out',cert],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+    if result.returncode:raise ValueError('Self-signed certificate generation failed')
+    pathlib.Path(cert).chmod(0o600);pathlib.Path(key).chmod(0o600)
+    generated=[[cert,str(dest_cert)],[key,str(dest_key)]];generated_cert=(str(dest_cert),str(dest_key));cert_mode='1'
+    meta['managed_certificates']=list(dict.fromkeys(meta.get('managed_certificates',[])+list(generated_cert)))
+   else:cert,key=args[3:5]
+   meta.update(domain=domain,cert_path=generated_cert[0] if generated_cert else cert,cert_mode=cert_mode)
+   template={'type':'hysteria2','tag':'hy2','listen':main['inbounds'][0]['listen'],'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
+  main['inbounds'].append(template)
+  for p,cfg,_,s in paths[1:]:
+   with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',cfg['inbounds'][0]['listen_port']))
+   inbound=copy.deepcopy(template);inbound['listen_port']=cfg['inbounds'][0]['listen_port'];inbound['listen']=cfg['inbounds'][0]['listen']
+   inbound['users']=[{'name':p.parent.name,**({'uuid':s['uuid'],'flow':'xtls-rprx-vision'} if protocol=='vless' else {'password':s['hy2_password']})}]
+   if protocol=='vless':s.update(public_key=meta['public_key'],sid=meta['sid'],sni=meta['sni'])
+   else:s.update(domain=domain,cert_path=cert,cert_mode=meta['cert_mode'])
+   cfg['inbounds'].append(inbound)
+elif action=='hy2':
+ up,down=int(args[0]),int(args[1]);ignore=args[2]=='true';obfs=args[3]
+ if not 0<=up<=100000 or not 0<=down<=100000 or args[2] not in ('true','false') or obfs not in ('none','salamander'):raise ValueError('Invalid HY2 settings')
+ if ignore and (up or down):raise ValueError('Bandwidth conflicts with ignore_client_bandwidth')
+ if not any(i['type']=='hysteria2' for i in main['inbounds']):raise ValueError('HY2 is not installed')
+ for _,cfg,_,s in paths:
+  for i in cfg['inbounds']:
+   if i['type']!='hysteria2':continue
+   i['ignore_client_bandwidth']=ignore
+   for field,v in [('up_mbps',up),('down_mbps',down)]:
+    i.pop(field,None)
+    if v:i[field]=v
+   if obfs=='none':i.pop('obfs',None)
+   else:i.setdefault('obfs',{'type':'salamander','password':secrets.token_urlsafe(24)})
+else:raise ValueError('Unknown config edit')
+
+def tls_check(i):
+ t=i['tls'];exe=os.environ.get('OPENSSL_BIN','openssl');cert=t['certificate_path'];key=t['key_path'];name=t['server_name']
+ identity='-checkip' if ':' in name or re.fullmatch(r'[0-9.]+',name) else '-checkhost'
+ for command in ([exe,'x509','-in',cert,'-noout','-checkend','0'],[exe,'x509','-in',cert,'-noout',identity,name]):
+  if subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:raise ValueError('Certificate expired or identity mismatched')
+ certpub=subprocess.check_output([exe,'x509','-in',cert,'-pubkey','-noout'],stderr=subprocess.DEVNULL)
+ keypub=subprocess.check_output([exe,'pkey','-in',key,'-pubout','-passin','pass:'],stderr=subprocess.DEVNULL)
+ if certpub!=keypub:raise ValueError('Certificate/key mismatch')
+
+planned=list(generated)
+for n,(p,cfg,mp,s) in enumerate(paths):
+ types={i['type'] for i in cfg['inbounds']};s['mode']='3' if len(types)==2 else '1' if 'vless' in types else '2'
+ if not cfg['inbounds']:raise ValueError('Account would have no protocol')
+ # Persist own private certificate copies for quota-managed accounts.
+ for i in cfg['inbounds']:
+  if i['type']=='hysteria2':tls_check(i)
+  if i['type']=='hysteria2' and p!=conf:
+   for field,filename in [('certificate_path','certificate.crt'),('key_path','private.key')]:
+    src=pathlib.Path(i['tls'][field]);dest=p.parent/filename
+    staged=stage/(str(n)+'-'+filename);shutil.copyfile(src,staged);staged.chmod(0o600);planned.append([str(staged),str(dest)])
+    i['tls'][field]=str(staged)
+   s.update(cert_path=str(p.parent/'certificate.crt'),managed_certificates=[str(p.parent/'certificate.crt'),str(p.parent/'private.key')])
+ candidate=stage/(str(n)+'-config.json');write(candidate,cfg)
+ result=subprocess.run([binary,'check','-c',str(candidate)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+ if result.returncode:raise ValueError('Candidate configuration failed validation')
+ if p==conf and generated_cert:
+  for i in cfg['inbounds']:
+   if i['type']=='hysteria2':i['tls'].update(certificate_path=generated_cert[0],key_path=generated_cert[1])
+ if p!=conf:
+  for i in cfg['inbounds']:
+   if i['type']=='hysteria2':i['tls'].update(certificate_path=str(p.parent/'certificate.crt'),key_path=str(p.parent/'private.key'))
+ write(candidate,cfg);planned.append([str(candidate),str(p)])
+ sm=stage/(str(n)+'-state.json');write(sm,s);planned.append([str(sm),str(mp)])
+write(stage/'plan.json',planned)

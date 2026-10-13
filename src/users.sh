@@ -102,7 +102,7 @@ users_manager(){
   prompt_options '1 初始化用户管理  2 添加用户  3 查看用量  4 修改流量额度' '1 Initialize  2 Add account  3 Usage  4 Change quota'
   prompt_options '5 启用/禁用用户  6 删除用户  7 重置流量  8 设置人数上限' '5 Enable/disable  6 Delete  7 Reset usage  8 Set account limit'
   prompt_options '9 用户节点与二维码  10 服务状态  11 启动用户服务  12 停止用户服务' '9 User exports/QR  10 Status  11 Start supervisor  12 Stop supervisor'
-  prompt_options '13 修改有效期  14 用户故障诊断  15 资源占用  0 返回' '13 Change validity  14 User diagnostics  15 Resources  0 Back'
+  prompt_options '13 修改有效期  14 用户故障诊断  15 资源占用  16 个人在线订阅  0 返回' '13 Change validity  14 User diagnostics  15 Resources  16 Personal subscriptions  0 Back'
   printf '%s' "$RESET"
   prompt_read '> ' choice || return 0
   [[ $choice != 0 ]] || return 0
@@ -169,6 +169,7 @@ PY
     users_engine validity "$id" "$days";;
    14) users_diagnostics;;
    15) resource_info;;
+   16) online_user;;
    12) if confirm "$(L '停止全部受限用户节点？' 'Stop all quota-managed user nodes?')"; then users_engine service off && users_stop; fi;;
    *) err "$(L '无效选项' 'Invalid selection')";;
   esac
