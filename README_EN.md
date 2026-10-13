@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.8.0 — sing-box Installer and Ubuntu/Debian VPS Management
+# SKYBYTE Manager V2.8.1 — sing-box Installer and Ubuntu/Debian VPS Management
 
 **SKYBYTE Manager** is a Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces. It installs sing-box with **VLESS + Reality + Vision, Hysteria2 (HY2), or both protocols**, manages Cloudflare Argo tunnels and WARP routing, and provides per-user traffic quotas and expiry. Client exports support Shadowrocket, v2rayN, Clash Verge/Mihomo/OpenClash and sing-box JSON.
 
@@ -7,6 +7,8 @@ YouTube: [SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [中文](README.
 If you find this script helpful, please subscribe to my YouTube channel and support SKYBYTE's continued development!
 
 The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential links bold red, warnings bold yellow and errors bold red on ANSI terminals. Set `NO_COLOR=1` to disable colors. Every YES confirmation is case-insensitive.
+
+V2.8.1 whole-source audit fixes: the installer checks ownership and atomically publishes the manager, rejecting symlinks and concurrent operations. Restore journals original files privately, rolls back files/service states on failure, and preserves unrelated configuration files. User allocation reserves inactive managed ports and inherits the actual listener family. Node-edit rollback reloads the original admin config; offline selection survives menu actions; standalone Argo certificate issuance no longer prompts to configure absent HY2. Initial generation passes UUIDs, passwords and private keys through a file descriptor instead of process arguments. Media results show region sources/conflicts without claiming account eligibility or playback.
 
 ## Quick navigation
 
@@ -33,6 +35,8 @@ bash install.sh
 ```
 
 Until the development branch is merged, that command installs the main version. To test this branch, clone the repository, switch to the branch and run `bash ./singbox-v2.sh` as root. Review downloaded scripts before execution.
+
+The entry point updates only identifiable SKYBYTE Manager files and preserves the current copy on download/validation failure. The installation directory, target script and operation lock must not be symlinks. Retry after any active management operation completes.
 
 Fresh installation uses the official sing-box 1.14.3 binary tested for this manager release and verifies its SHA-256 digest against GitHub Release metadata. It does not run a remote package installer. Choose a language at first launch; it is saved in `/etc/singbox-v2/language.conf`. Menu **6 → 1** changes language.
 
@@ -104,7 +108,7 @@ Hopping is off by default, under **4 → 5**, with nftables (default) or iptable
 
 Updates back up first, download and check a candidate binary, then replace the binary, restart and check service health. Startup failures restore the previous binary. Manual updates require confirmation. Weekly automatic updates have been removed. Startup backs up and retires owned legacy update units, preserving modified or unowned units. Service health alone does not prove client connectivity.
 
-New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including snapshots of external TLS certificate/key files. Restore backs up the current deployment and attempts rollback on failure. It disables managed hopping and clears its state; re-enable hopping when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
+New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including external TLS certificate/key snapshots. Restore backs up the deployment and journals original file contents/modes privately, publishing each managed config/certificate/binary atomically. Failure rolls back files and original service activity/boot states; incomplete rollback is reported with retained transaction/backup paths. Unrelated configuration files are preserved. Success refreshes client exports and disables managed hopping; re-enable it when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
 
 ## Validation
 
@@ -119,6 +123,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 Set `SING_BOX_BIN` and `MIHOMO_BIN` to include real engine validation: all three server modes, Mihomo YAML parsing, and local forwarding through HY2 with sing-box/Mihomo clients. Mihomo tests require PyYAML. Credentials and certificates are generated in temporary directories and are never committed.
+
+Local tests require Python 3.9+, PyYAML and OpenSSL with `x509 -checkhost/-checkip`. The old macOS system LibreSSL is unsuitable; select OpenSSL 3 through `OPENSSL_BIN` and the executable search path. Set `HAPROXY_BIN` for real TCP passthrough tests. Tests requiring unavailable protocol engines, HAProxy or GnuPG are skipped, which does not establish that functionality was verified.
 
 GitHub Actions runs checks in Ubuntu 24.04 and Debian 12 containers. See [audit and testing notes](docs/TESTING.md). Local handshakes do not replace live VPS tests of provider firewalls, UDP NAT, systemd startup or Shadowrocket/v2rayN GUI imports. Validate these on a disposable VPS with snapshots and console access.
 
@@ -214,9 +220,9 @@ Backups include routing, private gateway configuration and owned units. Restore 
 
 ## Streaming availability tests (V2.4)
 
-Open **4 → 8** for Netflix, Disney+, YouTube Premium, Amazon Prime Video and TikTok. Choose direct IPv4, direct IPv6, WARP or an IPv4/WARP comparison. Anonymous official-page requests use verified TLS, bounded timeouts/body sizes, no account login or cookies, and no remote third-party scripts.
+Open **4 → 8** for Netflix, Disney+, YouTube Premium, Amazon Prime Video and TikTok. Choose direct IPv4, direct IPv6, WARP or an IPv4/WARP comparison. Anonymous official-page requests identify country/region fields, final-page locale hints and explicit location restrictions; the output names the field source and reports missing or conflicting clues. Requests use verified TLS, bounded timeouts/body sizes, no account login or cookies, and no remote third-party scripts.
 
-Results distinguish region hints, explicit location restrictions, catalog/subscription metadata and connection failure. HTTP 200 does not establish full catalog or playback access. Denials, rate limits, challenges and changed pages remain unknown rather than being mislabeled as blocked. Login, payment eligibility, actual playback and AI-account availability are not tested. Proxy tests use remote DNS and do not claim a particular egress address family.
+Results distinguish page region clues, explicit location restrictions, catalog/subscription offers and connection failures. A page field or URL locale is only a clue; it does not prove the VPS egress country, a full catalog or playback. HTTP 200 confirms only a page response, not unlocking. 403/429, challenges and changed pages remain unknown rather than being reported as blocked. No account login, payment eligibility or playback validation is performed; AI account availability is not tested. WARP uses proxy-side DNS and does not claim a specific egress address family.
 
 Private reports contain classifications, region hints and HTTP codes, at `/etc/singbox-v2/reports/media-*.json`, mode 600. Raw pages and node credentials are excluded. Probes run on demand without background jobs. WARP and each user core add resource usage; **4 → 7** shows process/memory/load snapshots, without a fixed account-capacity promise.
 
@@ -268,7 +274,7 @@ Restore retains current account policy/usage and current subscription tokens. HT
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.7.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.8.1
 ```
 
 Packaging includes only install.sh, the full bundle, public rule catalog and SHA256SUMS, never runtime state or credentials.
@@ -365,7 +371,7 @@ TCP forwarding and validation follow the [HAProxy TCP documentation](https://www
 
 ### Which VPS operating systems does SKYBYTE Manager support?
 
-Ubuntu/Debian VPS instances using systemd, on x86_64 or arm64. Management requires root. Automated tests cover Ubuntu 24.04 and Debian 12; validate other versions before deployment.
+Ubuntu/Debian VPS instances using systemd. Official asset mappings cover amd64, arm64, armv7 and 386; management requires root. Automated tests cover Ubuntu 24.04 and Debian 12 on amd64; validate other versions and architectures before deployment.
 
 ### Does Hysteria2 require a domain and a purchased certificate?
 

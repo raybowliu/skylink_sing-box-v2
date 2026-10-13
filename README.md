@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.8.0 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
+# SKYBYTE Manager V2.8.1 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
 
 **SKYBYTE Manager** 是基于 Bash 的 Ubuntu/Debian VPS 管理工具，提供简体中文和 English 界面，支持 sing-box 的 **VLESS + Reality + Vision、Hysteria2（HY2）及双协议部署**。通过交互菜单管理 Cloudflare Argo 隧道、WARP 出站分流、用户流量配额与有效期，并导出 Shadowrocket（小火箭）、v2rayN、Clash Verge/Mihomo/OpenClash 和 sing-box JSON 客户端配置。
 
@@ -7,6 +7,8 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 如果这个脚本对你有帮助，欢迎订阅我的 YouTube 频道，支持 SKYBYTE 持续更新！
 
 主菜单包含 SKYBYTE ASCII logo；菜单绿色加粗、节点链接红色加粗、警告黄色加粗、错误红色加粗。支持 ANSI 的交互终端显示颜色，`NO_COLOR=1` 可关闭。所有 `YES` 确认不区分大小写。
+
+V2.8.1 完整源码审计修复：一键入口验证目标归属并原子替换脚本，拒绝软链接和并发管理任务；恢复采用私密事务日志，失败恢复原文件及原服务状态，不覆盖配置目录里的无关文件；用户端口预留涵盖未启动的托管服务，并沿用真实监听地址族；修复节点编辑回滚后管理员服务未重载、离线目录选择不跨菜单生效，以及独立 Argo 申请证书后的 HY2 提示。首次配置生成通过文件描述符传递 UUID、密码和私钥，避免放进进程参数。流媒体地区检测显示字段来源和冲突结果，仍不验证账号资格或实际播放。
 
 ## 快速导航
 
@@ -33,6 +35,8 @@ bash install.sh
 ```
 
 开发分支未合并时，上述命令仍安装 main 版本。测试当前分支可先克隆仓库并切换到对应分支，再以 root 账号运行 `bash ./singbox-v2.sh`。建议先审阅下载的脚本。
+
+一键入口只更新可识别的 SKYBYTE Manager 脚本，下载/语法检查失败保留原副本；安装目录、目标脚本和操作锁不能为软链接。已有管理任务执行中时，请等待任务完成后重试。
 
 首次安装使用本版已测试的 sing-box 1.14.3 官方二进制，按 GitHub Release API 的 SHA-256 摘要检查下载，不执行远程软件包安装脚本。首次启动选择语言，保存于 `/etc/singbox-v2/language.conf`，菜单 **6 → 1** 切换语言。
 
@@ -104,7 +108,7 @@ HY2 跳跃默认关闭，入口 **4 → 5**，可选择 nftables（默认）或 
 
 更新先备份，再下载并检查候选二进制，配置检查通过后替换、重启并检查服务状态；启动失败恢复旧二进制。手动更新需要确认。每周自动更新选项已移除；新版启动会备份并停用归属本工具的旧更新单元，被修改或不属于本工具的单元保留。服务状态不等于端到端可达。
 
-新备份使用 `config/`、`state.json`、`sing-box.bin` 独立路径，包含已有外部证书/私钥的快照。恢复前备份当前配置，失败尝试回滚。恢复后关闭托管跳跃并更新状态，需要时重新开启；不会替换其他 nftables 表。旧版目录/二进制同名备份格式不能直接恢复。备份不自动删除，请保护磁盘空间和私钥。
+新备份使用 `config/`、`state.json`、`sing-box.bin` 独立路径，包含已有外部证书/私钥的快照。恢复前备份当前配置，并在私密事务目录保存原文件及权限；配置、证书与二进制逐文件原子写入。任一阶段失败时回滚并恢复原服务启停/自启状态；若回滚未能全部完成，明确报告并保留事务目录和备份供人工恢复。只恢复托管配置与证书，不覆盖配置目录里的无关文件；成功后刷新客户端导出并关闭托管跳跃，需要时重新开启。不会替换其他 nftables 表。旧版目录/二进制同名备份格式不能直接恢复。备份不自动删除，请保护磁盘空间和私钥。
 
 ## 测试与范围
 
@@ -119,6 +123,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 设置 `SING_BOX_BIN`、`MIHOMO_BIN` 后，测试包含实际 sing-box 三种服务端配置检查、Mihomo YAML 检查，以及 sing-box/Mihomo 客户端连接 HY2 服务端的本地转发。Mihomo 测试需要 PyYAML。凭据与证书在临时目录运行时生成，不提交仓库。
+
+本地测试需 Python 3.9+、PyYAML 和支持 `x509 -checkhost/-checkip` 的 OpenSSL；macOS 自带旧 LibreSSL 不适合作为该测试环境，可通过 `OPENSSL_BIN` 和命令搜索路径选择 OpenSSL 3。设置 `HAPROXY_BIN` 可运行真实 TCP 透传测试。缺少协议引擎、HAProxy 或 GnuPG 时相应实测会跳过，不能视为已验证。
 
 GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审计与测试记录](docs/TESTING.md)。本地握手不能代替真实 VPS 的云防火墙、UDP NAT、systemd 启动和 Shadowrocket/v2rayN 图形客户端导入测试；这些项目须在有快照和控制台的 VPS 上验证。
 
@@ -214,9 +220,9 @@ IPv6 地址使用正确 URI 方括号和证书 IP SAN。纯 IPv6 VPS 仍需能�
 
 ## 流媒体可用性检测（V2.4）
 
-入口 **4 → 8**，支持 Netflix、Disney+、YouTube Premium、Amazon Prime Video、TikTok，可选直连 IPv4、直连 IPv6、WARP，或比较 IPv4 与 WARP。检测时临时请求匿名官方页面，保留 TLS 验证、限定超时与响应大小，不登录、不发送账号 Cookie，不执行第三方检测脚本。
+入口 **4 → 8**，支持 Netflix、Disney+、YouTube Premium、Amazon Prime Video、TikTok，可选直连 IPv4、直连 IPv6、WARP，或比较 IPv4 与 WARP。检测临时请求官方匿名页面，识别页面中的国家/地区字段、最终页面语言区域提示及明确的地区限制；输出注明识别字段来源，地区线索缺失或冲突时如实显示未识别或多个结果。请求保留 TLS 验证、限定超时与响应大小，不登录、不发送账号 Cookie，不执行第三方检测脚本。
 
-结果区分页面地区提示、明确地区限制、片目/订阅入口和连接失败；HTTP 200 只表示页面响应，不能证明完整片库或实际播放。403/429、验证码和页面变化标记为未知，不直接判为未解锁。当前没有登录、付款资格或播放验证，也没有 AI 服务账号检测。WARP 检测使用代理远程 DNS，地址族不确定时不标成 IPv4/IPv6。
+结果区分页面地区线索、页面明确报告的地区限制、片目/订阅入口和连接失败；地区字段/URL 语言只代表页面线索，不能证明 VPS 出口归属、完整片库或实际播放。HTTP 200 只表示页面响应，不能证明已解锁；403/429、验证码和页面变化标记为未知，不直接判为未解锁。当前不登录账号、不验证付款资格或实际播放，也没有 AI 服务账号检测。WARP 检测使用代理远程 DNS，地址族不确定时不标成 IPv4/IPv6。
 
 报告只保存分类结果、地区提示和 HTTP 状态，位于 `/etc/singbox-v2/reports/media-*.json`，权限 600，不保存原始网页或节点凭据。检测按需运行，不创建常驻探测任务。WARP 网关和每个用户实例会增加资源占用，可用 **4 → 7** 查看进程、内存和负载；没有固定的最大用户容量承诺。
 
@@ -268,7 +274,7 @@ HY2 支持上下行 Mbps、`ignore_client_bandwidth` 与 Salamander 混淆，服
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.7.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.8.1
 ```
 
 打包只包含安装入口、完整脚本、公开规则列表及SHA256SUMS，不发布运行时配置或凭据。
@@ -365,7 +371,7 @@ TCP 转发能力与配置校验参考 [HAProxy TCP 文档](https://www.haproxy.c
 
 ### SKYBYTE Manager 支持哪些 VPS 系统？
 
-支持使用 systemd 的 Ubuntu/Debian VPS，架构为 x86_64 或 arm64，运行管理功能需要 root 权限。自动化测试覆盖 Ubuntu 24.04 和 Debian 12；其他系统版本需自行验证。
+支持使用 systemd 的 Ubuntu/Debian VPS，官方资产映射支持 amd64、arm64、armv7 和 386，运行管理功能需要 root 权限。自动化测试覆盖 Ubuntu 24.04 和 Debian 12 的 amd64 环境；其他系统版本与架构需自行验证。
 
 ### Hysteria2 必须购买域名和证书吗？
 

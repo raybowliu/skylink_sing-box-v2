@@ -59,7 +59,49 @@ class FeaturesTest(unittest.TestCase):
         r=media.classify('Amazon Prime Video',[self.response('"currentTerritory":"JP"')])
         self.assertEqual(r['region'],'JP');self.assertEqual(r['status'],'unknown')
         r=media.classify('YouTube Premium',[self.response('"countryCode":"US"')])
-        self.assertEqual(r['status'],'unknown')
+        self.assertEqual(r['status'],'unknown');self.assertEqual(r['region'],'US')
+        self.assertEqual(r['region_source'],'countryCode')
+
+    def test_streaming_region_fields_escaped_json_and_url_locale_are_reported(self):
+        cases=(
+            ('Netflix',r'{\"requestCountry\":{\"id\":\"HK\"}}','HK','requestCountry.id'),
+            ('Disney+',r'{\"country_code\":\"us\"}','US','country_code'),
+            ('YouTube Premium',r'{\"gl\":\"jp\"}','JP','gl'),
+            ('Amazon Prime Video',r'{\"currentTerritory\":\"GB\"}','GB','currentTerritory'),
+            ('TikTok',r'{\"data\":{\"store_region\":\"sc\"}}','SC','store_region'))
+        for service,body,region,source in cases:
+            with self.subTest(service=service):
+                result=media.classify(service,[self.response(body)])
+                self.assertEqual((result['region'],result['region_source']),(region,source))
+                self.assertNotIn(result['status'],('catalog','offer','supported'))
+        result=media.classify('Disney+',[self.response('',url='https://www.disneyplus.com/en-gb')])
+        self.assertEqual((result['region'],result['region_source']),('GB','final URL locale'))
+        self.assertEqual(media.region_label('US/HK','zh_CN'),'美国 (US)/香港 (HK)')
+        result=media.classify('Netflix',[self.response(r'{\"requestCountry\":{\"id\":\"HK\"},\"countryCode\":\"US\"}')])
+        self.assertEqual(result['region'],'HK/US')
+        self.assertEqual(result['region_source'],'requestCountry.id, countryCode')
+        result=media.classify('Amazon Prime Video',[self.response('{"countryCode":"US","details":{"countryCode":"HK"}}')])
+        self.assertEqual((result['region'],result['region_source']),('US/HK','countryCode'))
+        result=media.classify('Disney+',[self.response('{"countryCode":"US"}',code=403)])
+        self.assertEqual((result['region'],result['status']),('-','verification'))
+
+    def test_streaming_location_restrictions_require_explicit_page_evidence(self):
+        for service,body in (
+            ('Netflix','This title is not available to watch in your area.'),
+            ('Amazon Prime Video','This video is currently unavailable to watch in your location.'),
+            ('TikTok','This content is not available in your region.')):
+            with self.subTest(service=service):
+                result=media.classify(service,[self.response(body)])
+                self.assertEqual(result['status'],'restricted')
+        result=media.classify('Netflix',[self.response('A title is unavailable')])
+        self.assertEqual(result['status'],'unknown')
+        result=media.classify('Netflix',[self.response('Help: catalogs vary by country because of licensing')])
+        self.assertEqual(result['status'],'unknown')
+        result=media.classify('Disney+',[self.response(r'{\"inSupportedLocation\":false}')])
+        self.assertEqual(result['status'],'restricted')
+        self.assertEqual(media.status_color('restricted'),'\033[1;31m')
+        self.assertEqual(media.status_color('network'),'\033[1;31m')
+        self.assertEqual(media.status_color('unknown'),'\033[1;33m')
 
     def test_streaming_positive_evidence_and_explicit_restriction(self):
         r=media.classify('Netflix',[self.response('<meta property="og:video" content="preview"> "requestCountry":{"id":"HK"}')])

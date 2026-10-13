@@ -175,3 +175,29 @@ The full local suite passed **219 tests** with **4 skips** using Python 3.12/Ope
 Standalone Argo tests verify creation of an empty core and loopback-only origin, no overwrite of an existing config, unchanged existing manager directory permissions/files, stale-export removal, and preserving Argo while adding an IPv6 Reality or self-signed HY2 listener. They also verify the first direct node enables the previously disabled sing-box service. Existing tests continue to exercise bilingual menu routing, Argo WS TLS exports, WARP dual-stack family checks, real local sing-box forwarding, and rollback behavior. `python3 scripts/build.py --check`, rootless bundle self-check, `bash -n` for the installer/bundle/all source shell files, ShellCheck 0.11.0 for the installer/bundle, and `git diff --check` passed.
 
 Cloudflare account/token registration, live Quick Tunnel service availability, actual provider NAT/security-group rules and a real inaccessible VPS were not exercised. The Argo probe checks TCP 7844 only; it does not prove UDP reachability, tunnel registration or client connectivity. Offline metadata must itself come from a trusted channel, and offline binary assets do not supply missing OS packages. Validate Cloudflare and provider behavior on a disposable VPS with console/snapshot access before relying on this as an emergency path.
+
+## V2.8.1 whole-source audit / 完整源码审计
+
+The review covers all `src/` modules, the generated bundle, installer, build/release/benchmark scripts, regression families, CI and both READMEs. The following concrete problems were fixed; the existing bilingual UI, credentials, secure TLS defaults and optional-service architecture remain.
+
+| Finding / 问题 | Fix / 修复 |
+| --- | --- |
+| Installer could overwrite a foreign script or follow a symlink; partial publication and temporary-file cleanup were weak | Guard owned targets/directories/regular locks, HTTPS-only download, syntax/self-check, operation lock and atomic rename |
+| Bootstrap could chmod/write through directory or language-file symlinks | Reject unsafe directory, language and lock paths before mutation |
+| Restore had early failure paths after stopping users without rollback | Private file journal, atomic publication, EXIT cleanup, restored original modes and service activity/boot state; retain journal when rollback is incomplete |
+| Whole-directory restore could replace unrelated files; client exports could remain stale | Allowlist managed configuration/certificate targets and refresh administrator/personal exports |
+| Backup copied unrelated files and symlinks, causing safe external TLS layouts to fail the manifest check | Copy only the managed configuration and dereferenced public/private TLS snapshots; preserve unrelated source files |
+| Port allocation/edits could reuse stopped admin, account-controller, Argo, WARP, HTTPS or HAProxy ports | Reserve configured ports without requiring active listeners, including protocol additions |
+| Advertised IPv6/DDNS/NAT addresses could determine the wrong account listener family | Inherit actual template listeners and probe the corresponding socket family/protocol |
+| Failed node edits restored files without reloading the original administrator core | Restart the originally active administrator with the restored configuration |
+| Initial UUID/password/private key appeared in Python process arguments | Pass NUL-delimited configuration input through FD 3 |
+| Offline selection disappeared when the menu action subshell returned | Carry the selected directory through a private session file and remove it on exit |
+| Standalone Argo certificate issuance could prompt to configure absent HY2 | Detect the actual HY2 inbound before offering certificate assignment |
+| Multiple occurrences of one region field were reduced to one result; denied responses could supply misleading clues | Preserve conflicting successful-page fields and sources, ignore failed responses; do not claim playback/account eligibility |
+| Branch push and PR created duplicate CI jobs | Test branch changes through PR, main through push; cancel superseded runs and bound job duration |
+
+`tests/test_audit.py` adds 17 regressions for these transactions, privacy and port/family cases. Streaming fixtures also cover escaped JSON, final URL locale, repeated/conflicting fields, explicit region restrictions and unknown results. The final suite contains 238 cases. Python syntax is checked for every source/script/test module, alongside all Bash syntax, ShellCheck and bundle consistency. Release packaging retains its explicit public-asset allowlist and SHA256 sums; runtime credentials are excluded and additional runtime paths are ignored by Git.
+
+Local validation used bundled Python 3.12/OpenSSL 3.6.2, sing-box 1.14.3, Mihomo 1.19.32 and real HAProxy 2.6.34. A 236-case full run passed with only the unavailable local GnuPG case skipped; two final port regressions were then added to the audit group. Earlier failures with the system Python/LibreSSL came from an unsuitable local test environment; no TLS verification was weakened. The final Ubuntu 24.04/Debian 12 CI suite, including GnuPG and the 10/30/50-account benchmark, must pass before merging/publishing.
+
+Systemd, UFW, package installation and public CA issuance remain isolated/mocked in functional tests; actual encrypted forwarding is tested on loopback. Operator-specific provider ingress, reboot persistence, live Cloudflare registration/egress, account playback and graphical client imports still require deployment checks on the operator's VPS.

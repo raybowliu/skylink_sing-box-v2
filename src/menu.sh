@@ -121,9 +121,11 @@ dispatch_action(){
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;
  esac
 }
-main(){
+main() (
  need_root; require_cmd flock
- local group action_status
+ local group action_status SKYBYTE_SESSION_FILE
+ SKYBYTE_SESSION_FILE=$(mktemp "$BASE/.session.XXXXXX") || return 1
+ trap 'rm -f -- "$SKYBYTE_SESSION_FILE"' EXIT
  retire_auto_update || return 1
  startup_info
  # An idle main menu must not hold off certificate renewal.
@@ -165,14 +167,20 @@ LOGO
   set -e
   flock -u 9
   if [[ $MAIN_ACTION == uninstall && $action_status == 0 && ! -e $META ]]; then return 0; fi
-  if [[ $MAIN_ACTION == manager_update && $action_status == 0 && -f $MANAGER_LIB ]] && ! grep -Fxq "MANAGER_VERSION=$MANAGER_VERSION" "$MANAGER_LIB"; then exec 9>&-; exec bash "$MANAGER_LIB"; fi
+  if [[ -s $SKYBYTE_SESSION_FILE ]];then IFS= read -r SKYBYTE_ASSET_DIR < "$SKYBYTE_SESSION_FILE";export SKYBYTE_ASSET_DIR;fi
+  if [[ $MAIN_ACTION == manager_update && $action_status == 0 && -f $MANAGER_LIB ]] && ! grep -Fxq "MANAGER_VERSION=$MANAGER_VERSION" "$MANAGER_LIB"; then rm -f -- "$SKYBYTE_SESSION_FILE";exec 9>&-; exec bash "$MANAGER_LIB"; fi
   load_language
  done
-}
+)
 
 bootstrap(){
  need_root
  require_cmd flock || return 1
+ local directory
+ for directory in "$BASE" "$REPORT" "$BACKUP";do
+  [[ ! -L $directory && ( ! -e $directory || -d $directory ) ]] || { err "$(L '管理目录异常，拒绝写入' 'Unsafe manager directory; refusing writes')";return 1; }
+ done
+ [[ ! -L $LANG_FILE && ( ! -e $LANG_FILE || -f $LANG_FILE ) && ! -L $LOCK && ( ! -e $LOCK || -f $LOCK ) ]] || { err "$(L '语言或锁文件异常，拒绝写入' 'Language/lock file is unsafe; refusing writes')";return 1; }
  mkdir -p "$BASE" "$REPORT" "$BACKUP"; chmod 700 "$BASE" "$REPORT" "$BACKUP"
  exec 9>"$LOCK"; flock -n 9 || { err "$(L '其他管理任务正在运行' 'Another manager is running')"; return 1; }
  load_language

@@ -72,9 +72,60 @@ def managed():
   except (OSError,ValueError,KeyError):continue
  return [p for _,p in sorted(result,key=lambda t:(t[0],t[1].name),reverse=True)]
 
+def replace_file(path,data,mode=0o600):
+ if path.is_symlink() or path.parent.is_symlink():raise ValueError('Restore target symlink')
+ fd,tmp=tempfile.mkstemp(dir=path.parent)
+ try:
+  with os.fdopen(fd,'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+  os.chmod(tmp,mode);os.replace(tmp,path)
+ finally:
+  if os.path.exists(tmp):os.unlink(tmp)
+
+def restore_targets():
+ return [(conf,'config/config.json',0o600),(base/'state.json','state.json',0o600),
+         (pathlib.Path(binary),'sing-box.bin',0o755),
+         (conf.parent/'hy2-backup.crt','config/hy2-backup.crt',0o600),
+         (conf.parent/'hy2-backup.key','config/hy2-backup.key',0o600)]
+
+def restore_stage(value):
+ p=pathlib.Path(value)
+ if p.is_symlink() or p.parent!=base or not p.name.startswith('restore.') or not p.is_dir():raise ValueError('Invalid restore transaction')
+ return p
+
+def restore_plan(root,value):
+ stage=restore_stage(value);plan=[]
+ for dest,name,mode in restore_targets():
+  source=root/name
+  if not source.exists():continue
+  if source.is_symlink() or not source.is_file() or dest.is_symlink() or dest.parent.is_symlink() or dest.exists() and not dest.is_file():raise ValueError('Unsafe restore file')
+  n=len(plan);candidate=stage/('new-'+str(n));old=stage/('old-'+str(n))
+  replace_file(candidate,source.read_bytes())
+  previous_mode=None
+  if dest.exists():previous_mode=dest.stat().st_mode&0o777;replace_file(old,dest.read_bytes())
+  plan.append({'target':str(dest),'mode':mode,'previous_mode':previous_mode,'index':n})
+ replace_file(stage/'transaction.json',json.dumps(plan).encode())
+
+def restore_files(value,rollback=False):
+ stage=restore_stage(value);plan=json.loads((stage/'transaction.json').read_text());allowed={str(p) for p,_,_ in restore_targets()}
+ for n,item in enumerate(plan):
+  dest=pathlib.Path(item['target']);mode=item['previous_mode'] if rollback else item['mode']
+  if str(dest) not in allowed or item['index']!=n or dest.is_symlink() or dest.parent.is_symlink():raise ValueError('Invalid restore journal')
+  if mode is None:
+   if dest.exists():
+    if dest.read_bytes()!=(stage/('new-'+str(n))).read_bytes():raise ValueError('Restore target changed; retained')
+    dest.unlink()
+  else:
+   if type(mode) is not int or not 0<=mode<=0o777:raise ValueError('Invalid restore mode')
+   source=stage/(('old-' if rollback else 'new-')+str(n))
+   if source.is_symlink() or not source.is_file():raise ValueError('Invalid restore source')
+   replace_file(dest,source.read_bytes(),mode)
+
 if action=='manifest':manifest(pathlib.Path(args[0]))
 elif action=='reseal':manifest(contained(args[0]),True)
 elif action=='preflight':check(contained(args[0]));print('Backup integrity/configuration preflight passed')
+elif action=='restore_plan':restore_plan(contained(args[0]),args[1])
+elif action=='restore_apply':restore_files(args[0])
+elif action=='restore_rollback':restore_files(args[0],True)
 elif action=='list':
  for p in managed():print(p.name+' | '+str(sum(f.stat().st_size for f in files(p).values()))+' bytes | '+str(p))
 elif action=='archive':

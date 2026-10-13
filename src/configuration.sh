@@ -32,7 +32,8 @@ PY_INITIAL_ADMIN
   [[ $first_admin != true ]] || systemctl disable --now sing-box.service || :
   configuration_rollback "$stage" || :
   if [[ $hop_active == true ]];then systemctl start singbox-v2-hop.service || :;fi
-  warp_resume false "$argo" "$users" || :
+  [[ $first_admin != true ]] || admin=false
+  warp_resume "$admin" "$argo" "$users" || :
   rm -rf "$stage";err "$(L '配置修改失败，已尝试恢复原配置' 'Configuration edit failed; original config restoration attempted')";return 1
  fi
  rm -rf "$stage"
