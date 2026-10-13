@@ -20,6 +20,7 @@ sub_menu(){
    say ' 3. 安装双协议' ' 3. Install both protocols'
    say ' 4. Argo 临时 / 固定隧道管理' ' 4. Argo Quick / Named Tunnel controls'
    say ' 5. 节点参数与协议增删' ' 5. Node settings and protocol changes'
+   say ' 6. 受限网络部署（Argo / IPv6 / NAT）' ' 6. Restricted networks (Argo / IPv6 / NAT)'
    ;;
   2)
    say ' 1. 查看节点与各客户端格式' ' 1. View nodes and client formats'
@@ -72,6 +73,7 @@ sub_menu(){
   1:3) MAIN_ACTION=install_dual;;
   1:4) MAIN_ACTION=argo;;
   1:5) MAIN_ACTION=settings;;
+  1:6) MAIN_ACTION=rescue;;
   2:1) MAIN_ACTION=nodes;;
   2:2) MAIN_ACTION=subscription;;
   2:3) MAIN_ACTION=rename;;
@@ -113,6 +115,7 @@ dispatch_action(){
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
  media) media_check;; warp) warp_menu;; relay) relay_menu;; haproxy) haproxy_menu;;
+ rescue) rescue_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
  update) core_versions;; settings) node_settings;; online) online_menu;; acme) acme_menu;; backup_tools) backup_tools;; help) usage_help;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;

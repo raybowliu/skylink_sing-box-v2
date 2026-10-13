@@ -119,7 +119,8 @@ PY_CLIENT_OWNER
 }
 warp_import_gateway(){
  check_owned && warp_guard || return 1
- local profile port saved active=false udp=true domains
+ local profile port saved active=false udp=true domains native=${1:-auto} routing=${2:-restricted}
+ [[ $native == auto || $native == 4 || $native == 6 ]] && [[ $routing == global || $routing == restricted ]] || return 1
  prompt_read "$(L '已有 WARP WireGuard 配置路径（私密文件）：' 'Existing WARP WireGuard profile path (private): ')" profile || return 0
  [[ -f $profile && ! -L $profile ]] || return 1
  prompt_read "$(L '共享本机代理端口 [40000]：' 'Shared local proxy port [40000]: ')" port || return 0; port=${port:-40000}
@@ -133,7 +134,7 @@ warp_import_gateway(){
  if ss -H -ltn "( sport = :$port )" | grep -q .; then
   if [[ $active != true ]] || [[ $(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["inbounds"][0]["listen_port"])' "$BASE/warp-gateway.json") != "$port" ]]; then rm -rf "$saved";err "$(L '代理端口已被占用' 'Proxy port occupied')";return 1;fi
  fi
- if ! warp_engine gateway "$profile" "$port"; then rm -rf "$saved"; return 1; fi
+ if ! warp_engine gateway "$profile" "$port" "$native"; then rm -rf "$saved"; return 1; fi
  if [[ $active == true ]]; then if ! systemctl stop skybyte-warp-gateway.service; then cp "$saved/gateway.json" "$BASE/warp-gateway.json";rm -rf "$saved";return 1;fi;fi
  cat >"$SYSTEMD_DIR/skybyte-warp-gateway.service" <<UNIT
 [Unit]
@@ -157,7 +158,7 @@ UNIT
   rm -rf "$saved"; err "$(L '网关验证失败，已恢复此前网关' 'Gateway verification failed; previous gateway restored')"; return 1
  fi
  rm -rf "$saved"; domains=$(warp_engine defaults) || return 1
- warp_switch restricted "$port" "$udp" "$domains"
+ warp_switch "$routing" "$port" "$udp" "$domains"
 }
 warp_dualstack(){
  local port trace family ips ip

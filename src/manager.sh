@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.7.0
+MANAGER_VERSION=2.8.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -93,7 +93,7 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：HAProxy TCP 透传（4 → 11）、住宅落地中转、在线订阅、ACME 与备份加密' 'Features: HAProxy TCP passthrough (4 → 11), residential relay, HTTPS subscriptions, ACME and encrypted backups'
+ say '功能更新：受限网络部署（1 → 6）、独立 Argo、IPv6/NAT、WARP 双栈与详细流媒体检测' 'Features: restricted-network deployment (1 → 6), standalone Argo, IPv6/NAT, WARP dual-stack and detailed media probes'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
@@ -209,7 +209,8 @@ PY_NAME_IP
 download_binary(){
  local version=$1 target=$2 arch tmp asset sum
  [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
- case "$(uname -m)" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; *) err "$(L '不支持此架构' 'Unsupported architecture')"; return 1;; esac
+ arch=$(rescue_engine arch "$(uname -m)" sing-box) || return 1
+ if [[ -n ${SKYBYTE_ASSET_DIR:-} ]];then rescue_engine asset "$SKYBYTE_ASSET_DIR" sing-box "$version" "$(uname -m)" "$target";return $?;fi
  tmp=$(mktemp -d) || return 1
  asset="sing-box-$version-linux-$arch.tar.gz"
  if ! curl -fsSL --retry 2 --max-time 180 "https://github.com/SagerNet/sing-box/releases/download/v$version/$asset" -o "$tmp/$asset" ||
@@ -282,12 +283,16 @@ write_config(){
 import json,sys
 conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
 node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
-listen='::' if ':' in ip else '0.0.0.0'
+vp=int(sys.argv[16]) if len(sys.argv)>16 else 443;hp=int(sys.argv[17]) if len(sys.argv)>17 else 443
+assert 1<=vp<=65535 and 1<=hp<=65535
+listen=sys.argv[18] if len(sys.argv)>18 and sys.argv[18] else ('::' if ':' in ip else '0.0.0.0')
+assert listen in ('::','0.0.0.0')
 d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':listen,'listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
 elif mode=='2': d['inbounds']=d['inbounds'][1:]
+for i in d['inbounds']:i['listen_port']=vp if i['type']=='vless' else hp
 with open(conf,'w') as f:json.dump(d,f,indent=2)
-with open(meta,'w') as f:json.dump({'node_name':node_name,'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'managed_certificates':[cert,key] if cert_mode=='1' else [],'ip':ip,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
+with open(meta,'w') as f:json.dump({'node_name':node_name,'mode':mode,'cert_mode':cert_mode,'cert_path':cert,'managed_certificates':[cert,key] if cert_mode=='1' else [],'ip':ip,'listen':listen,'domain':domain,'sni':sni,'uuid':uuid,'public_key':pub,'sid':sid,'hy2_password':password,'hop':False,'hop_start':20000,'hop_end':30000},f,indent=2)
 PY
 }
 install_protocol() (
@@ -298,7 +303,7 @@ install_protocol() (
  # shellcheck source=/dev/null
  . "$OS_RELEASE"
  case ${ID:-} in ubuntu|debian) ;; *) err "$(L '仅支持 Ubuntu/Debian' 'Ubuntu/Debian required')"; return 1;; esac
- local mode="${1:-}" cert_mode="" 
+ local mode="${1:-}" cert_mode="" vp=443 hp=443 supplied_ip='' listen_addr=''
  if [[ -z "$mode" ]]; then prompt_options '1 Reality 单协议 | 2 HY2 单协议 | 3 双协议 | 0 返回' '1 Reality only | 2 HY2 only | 3 Dual | 0 Back'
  prompt_read '> ' mode || return; fi
  [[ "$mode" == 0 ]] && return 0
@@ -307,9 +312,22 @@ install_protocol() (
  if [[ -e $CONF || -L $CONF || -e $META || -L $META || -e $BIN || -L $BIN || -e $SYSTEMD_DIR/sing-box.service || -L $SYSTEMD_DIR/sing-box.service ]] || command -v sing-box >/dev/null; then err "$(L '发现已有配置，拒绝覆盖' 'Existing configuration or binary found; refusing to overwrite')"; return 1; fi
  if systemctl list-unit-files sing-box.service --no-legend 2>/dev/null | grep -q sing-box; then err "$(L '已有 sing-box 服务，拒绝覆盖' 'Existing sing-box service found; refusing to overwrite')"; return 1; fi
  require_cmd ss || { apt-get update && apt-get install -y iproute2 || return 1; }
- if [[ $mode != 2 ]];then haproxy_engine check_port 443 || return 1;fi
- if [[ $mode != 2 ]] && ss -H -ltn '( sport = :443 )' | grep -q .; then err "$(L 'TCP 443 已被占用' 'TCP 443 is occupied')"; return 1; fi
- if [[ $mode != 1 ]] && ss -H -lun '( sport = :443 )' | grep -q .; then err "$(L 'UDP 443 已被占用' 'UDP 443 is occupied')"; return 1; fi
+ if [[ ${2:-} == custom ]];then
+  if [[ $mode != 2 ]];then prompt_read "$(L '本机 Reality TCP 端口 [443]：' 'Local Reality TCP port [443]: ')" vp || return 1;vp=${vp:-443};fi
+  if [[ $mode != 1 ]];then prompt_read "$(L '本机 HY2 UDP 端口 [443]：' 'Local HY2 UDP port [443]: ')" hp || return 1;hp=${hp:-443};fi
+  prompt_read "$(L '客户端连接的公网 IP / 域名（回车自动查询）：' 'Public IP/hostname for clients (Enter detects): ')" supplied_ip || return 1
+  [[ -z $supplied_ip ]] || supplied_ip=$(rescue_engine address "$supplied_ip") || return 1
+  local native_family
+  native_family=$(rescue_engine family) || return 1
+  case $native_family in 4) listen_addr=0.0.0.0;; 6) listen_addr=::;; *) [[ $supplied_ip == *:* ]] && listen_addr=:: || listen_addr=0.0.0.0;; esac
+  prompt_options '本机监听地址族：1 自动  2 IPv4  3 IPv6（NAT 请按 VPS 网卡选择）' 'Local bind family: 1 Auto  2 IPv4  3 IPv6 (for NAT, choose the VPS interface family)'
+  prompt_read '> ' native_family || return 1
+  case ${native_family:-1} in 1);; 2)listen_addr=0.0.0.0;; 3)listen_addr=::;; *)return 1;; esac
+ fi
+ valid_port "$vp" && valid_port "$hp" || return 1;vp=$((10#$vp));hp=$((10#$hp))
+ if [[ $mode != 2 ]];then haproxy_engine check_port "$vp" || return 1;fi
+ if [[ $mode != 2 ]] && ss -H -ltn "( sport = :$vp )" | grep -q .; then err "TCP $vp: $(L '已被占用' 'occupied')"; return 1; fi
+ if [[ $mode != 1 ]] && ss -H -lun "( sport = :$hp )" | grep -q .; then err "UDP $hp: $(L '已被占用' 'occupied')"; return 1; fi
  local domain="" cert="" key="" sni="" node_name
  node_name=$(choose_node_name) || { err "$(L '节点名称无效' 'Invalid node name')"; return 1; }
  if [[ $mode != 1 ]]; then
@@ -334,8 +352,10 @@ install_protocol() (
   sni=${sni:-addons.mozilla.org}
   [[ $sni =~ ^[a-zA-Z0-9.-]+$ ]] || { err "$(L '无效 SNI' 'Invalid SNI')"; return 1; }
  fi
- say '安装依赖...' 'Installing dependencies...'; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables procps || return 1
- require_cmd getent; getent ahosts github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS' 'GitHub DNS lookup failed; fix DNS first')"; return 1; }
+ if [[ -z ${SKYBYTE_ASSET_DIR:-} ]];then
+  say '安装依赖...' 'Installing dependencies...'; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables procps || return 1
+  require_cmd getent; getent ahosts github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS或使用离线包' 'GitHub DNS lookup failed; repair DNS or use offline assets')"; return 1; }
+ else rescue_dependencies && require_cmd openssl || return 1;fi
  mkdir -p "$(dirname "$BIN")"
  if [[ $cert_mode == 2 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
  if [[ $cert_mode == 1 ]]; then
@@ -352,20 +372,29 @@ install_protocol() (
  priv=$(sed -n 's/^PrivateKey: *//p' <<<"$pair"); pub=$(sed -n 's/^PublicKey: *//p' <<<"$pair")
  [[ -n $priv && -n $pub ]] || { err "$(L 'Reality 密钥生成失败' 'Reality key generation failed')"; return 1; }; fi
  sid=$(openssl rand -hex 4); passwd=$(openssl rand -hex 16)
- ip=$(curl -q -4fsS --noproxy '*' --max-time 12 https://api.ipify.org) || ip=$(curl -q -6fsS --noproxy '*' --max-time 12 https://api64.ipify.org) || { err "$(L '公网 IP 查询失败' 'Public IP lookup failed')"; return 1; }
+ if [[ -n $supplied_ip ]];then ip=$supplied_ip;else
+ ip=$(curl -q -4fsS --noproxy '*' --max-time 12 https://api.ipify.org) || ip=$(curl -q -6fsS --noproxy '*' --max-time 12 https://api64.ipify.org) || { err "$(L '公网 IP 查询失败，请从受限网络入口指定地址' 'Public IP lookup failed; specify an address via restricted-network setup')"; return 1; }
  python3 - "$ip" <<'PY' || return 1
 import ipaddress,sys
 assert ipaddress.ip_address(sys.argv[1]).is_global
 PY
+ fi
  mkdir -p "$(dirname "$CONF")"
  if [[ $cert_mode == 1 ]]; then
   [[ ! -e $(dirname "$CONF")/hy2-selfsigned.crt && ! -e $(dirname "$CONF")/hy2-selfsigned.key ]] || { err "TLS files already exist"; return 1; }
   domain="$ip"; cert="$(dirname "$CONF")/hy2-selfsigned.crt"; key="$(dirname "$CONF")/hy2-selfsigned.key"
-  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=IP:$ip" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
+  local san
+  san=$(python3 - "$ip" <<'PY_INSTALL_SAN'
+import ipaddress,sys
+try:ipaddress.ip_address(sys.argv[1]);print('IP:'+sys.argv[1])
+except ValueError:print('DNS:'+sys.argv[1])
+PY_INSTALL_SAN
+  ) || return 1
+  openssl req -x509 -newkey rsa:3072 -sha256 -nodes -days 365 -subj "/CN=$ip" -addext "subjectAltName=$san" -addext "basicConstraints=critical,CA:TRUE" -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" -keyout "$key" -out "$cert" >/dev/null 2>&1 || return 1
   chmod 600 "$key"; chmod 644 "$cert"
  fi
  if [[ $mode != 1 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
- write_config "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode" "$node_name"
+ write_config "$CONF" "$META" "$domain" "$cert" "$key" "$sni" "$uuid" "$priv" "$pub" "$sid" "$passwd" "$ip" "$mode" "$cert_mode" "$node_name" "$vp" "$hp" "$listen_addr"
  chmod 600 "$CONF" "$META"
  "$BIN" check -c "$CONF" || { err "$(L '配置检查失败' 'Configuration check failed')"; return 1; }
  exports >/dev/null || return 1
@@ -374,7 +403,7 @@ PY
  cert=$(state cert_path)
  "$BIN" check -c "$CONF" || return 1
  setup_service || return 1
- if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then if [[ $mode != 2 ]]; then ufw allow 443/tcp; fi; if [[ $mode != 1 ]]; then ufw allow 443/udp; fi; fi
+ if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then if [[ $mode != 2 ]]; then ufw allow "$vp/tcp"; fi; if [[ $mode != 1 ]]; then ufw allow "$hp/udp"; fi; fi
  systemctl daemon-reload && systemctl enable --now sing-box && systemctl restart sing-box || return 1
  sleep 2; systemctl is-active --quiet sing-box || { err "$(L '服务启动失败，请查看 journalctl -u sing-box' 'Service failed; inspect journalctl -u sing-box')"; return 1; }
  if [[ $cert_mode == 1 ]]; then echo "$(L '自签名证书：' 'Self-signed certificate: ')$cert"; openssl x509 -in "$cert" -noout -fingerprint -sha256; say '务必将证书安全导入客户端并验证，链接本身不足以建立信任。' 'Securely import and verify certificate on client; URL alone cannot establish trust.'; fi
@@ -402,7 +431,7 @@ managed_restart(){
  if [[ -f $SYSTEMD_DIR/skybyte-argo-node.service ]] && systemctl is-active --quiet skybyte-argo-node.service; then argo_active=true; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-tunnel.service ]] && systemctl is-active --quiet skybyte-argo-tunnel.service; then tunnel_active=true; fi
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service; then users_guard || return 1; users_active=true; fi
- systemctl restart sing-box && service_healthy || return 1
+ admin_restart || return 1
  if [[ $argo_active == true ]]; then
   systemctl restart skybyte-argo-node.service && systemctl is-active --quiet skybyte-argo-node.service || return 1
   if [[ $tunnel_active == true ]]; then systemctl restart skybyte-argo-tunnel.service || return 1; fi
@@ -420,7 +449,7 @@ apply_update(){
  if [[ -f $BASE/users.json ]]; then if ! users_guard || ! users_engine validate "$candidate"; then rm -f "$candidate"; return 1; fi; fi
  command install -m 755 "$candidate" "$BIN" || return 1; rm -f "$candidate"
  if ! managed_restart; then
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; admin_restart || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '更新失败，已恢复原二进制' 'Update failed; original binary restored')"; return 1
  fi
  python3 - "$BASE/core-version.json" "$new" "$CORE_RECOMMENDED" <<'PY_CORE_VERSION'
@@ -531,9 +560,9 @@ restore(){
  users_stop || return 1
  cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
  command install -m 755 "$path/sing-box.bin" "$BIN" || return 1
- if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! systemctl restart sing-box || ! service_healthy || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path" || ! auxiliary_restore_snapshot "$path"; then
+ if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! admin_restart || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path" || ! auxiliary_restore_snapshot "$path"; then
   cp -a "$snap/config/." "$(dirname "$CONF")"; cp "$snap/state.json" "$META"
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; admin_restart || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '恢复失败，已回滚' 'Restore failed; rolled back')"; return 1
  fi
  # Hopping is host state: avoid restoring metadata claiming rules that are absent.
@@ -713,7 +742,8 @@ argo_guard(){
 }
 download_cloudflared(){
  local target=$1 tmp arch tag asset digest
- case "$(uname -m)" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; *) return 1;; esac
+ arch=$(rescue_engine arch "$(uname -m)" cloudflared) || return 1
+ if [[ -n ${SKYBYTE_ASSET_DIR:-} ]];then rescue_engine asset "$SKYBYTE_ASSET_DIR" cloudflared '' "$(uname -m)" "$target";return $?;fi
  tmp=$(mktemp -d) || return 1
  curl -fsSL --retry 2 --max-time 30 https://api.github.com/repos/cloudflare/cloudflared/releases/latest -o "$tmp/release.json" || { rm -rf "$tmp"; return 1; }
  tag=$(python3 -c 'import json,sys; r=json.load(open(sys.argv[1])); assert not r["prerelease"] and not r["draft"]; print(r["tag_name"])' "$tmp/release.json") || { rm -rf "$tmp"; return 1; }
@@ -796,7 +826,13 @@ argo_wait(){
  return 1
 }
 argo_install(){
- need_root; check_owned || return 1; argo_guard || return 1
+ need_root
+ if [[ ! -e $CONF && ! -e $META && ! -L $CONF && ! -L $META ]];then
+  local bootstrap_rc=0;rescue_bootstrap_core || bootstrap_rc=$?
+  [[ $bootstrap_rc != 2 ]] || return 0
+  [[ $bootstrap_rc == 0 ]] || return "$bootstrap_rc"
+ fi
+ check_owned || return 1; argo_guard || return 1
  local mode=$1 port name domain='' token='' stage snap file
  [[ $mode == quick || $mode == named ]] || return 1
  for file in argo-state.json argo-server.json argo.token argo-empty.yml cloudflared; do
@@ -823,6 +859,7 @@ argo_install(){
  snap=$(backup) || return 1
  stage=$(mktemp -d "$BASE/.argo-install.XXXXXX") || return 1
  if ! argo_write_config "$stage" "$mode" "$domain" "$port" "$name" || ! "$BIN" check -c "$stage/argo-server.json" || ! download_cloudflared "$stage/cloudflared"; then rm -rf "$stage"; return 1; fi
+ rescue_engine options "$stage/argo-state.json" "$(rescue_engine family)" auto || { rm -rf "$stage";return 1; }
  if [[ $mode == named ]]; then printf '%s' "$token" >"$stage/argo.token"; token=''; fi
  chmod 600 "$stage"/argo-*; chmod 755 "$stage/cloudflared"
  for file in argo-state.json argo-server.json argo-empty.yml cloudflared argo.token; do
@@ -854,7 +891,9 @@ def sync():
  except (OSError,subprocess.TimeoutExpired):pass
 state=json.loads(state_path.read_text());mode=state['mode']
 assert mode in ('quick','named')
-common=[str(base/'cloudflared'),'tunnel','--config',str(base/'argo-empty.yml'),'--no-autoupdate','--grace-period','5s','--protocol','auto']
+edge=state.get('edge_ip_version','auto');transport=state.get('transport','auto')
+assert edge in ('auto','4','6') and transport in ('auto','quic','http2')
+common=[str(base/'cloudflared'),'tunnel','--config',str(base/'argo-empty.yml'),'--no-autoupdate','--grace-period','5s','--edge-ip-version',edge,'--protocol',transport]
 if mode=='quick':
  update(domain='',connected=False,last_error='');command=common+['--url',f"http://127.0.0.1:{state['port']}"]
 else:
@@ -896,6 +935,7 @@ argo_status(){
  say "最近错误类别：$(argo_state last_error)" "Last error category: $(argo_state last_error)"
  mode=$(argo_state mode); domain=$(argo_state domain); port=$(argo_state port); connected=$(argo_state connected)
  say "模式：${mode}；公开域名：${domain:-尚未分配}；本机端口：${port}；已注册：$connected" "Mode: $mode; hostname: ${domain:-not assigned}; local port: $port; registered: $connected"
+ say "连接地址族：$(argo_state edge_ip_version)；隧道传输：$(argo_state transport)" "Edge IP version: $(argo_state edge_ip_version); transport: $(argo_state transport)"
  if systemctl is-active --quiet skybyte-argo-node.service; then ok "$(L 'Argo WS 服务运行中' 'Argo WS origin active')"; else err "$(L 'Argo WS 服务未运行' 'Argo WS origin inactive')"; fi
  if systemctl is-active --quiet skybyte-argo-tunnel.service; then ok "$(L 'Argo 隧道服务运行中' 'Argo tunnel worker active')"; else err "$(L 'Argo 隧道服务未运行' 'Argo tunnel worker inactive')"; fi
  warn "$(L '服务运行不代表客户端可达；固定模式还需核对 Cloudflare 公开路由和客户端 SNI/WS 路径。' 'Active services do not prove client connectivity; verify published routes and client SNI/WS paths.')"
@@ -966,11 +1006,11 @@ argo_restore_snapshot(){
 }
 argo_manager(){
  local choice
- prompt_options '1 临时隧道  2 固定隧道  3 状态  4 启动  5 停止  6 重启  7 刷新节点  8 卸载 Argo  0 返回' '1 Quick  2 Named  3 Status  4 Start  5 Stop  6 Restart  7 Refresh nodes  8 Remove Argo  0 Back'
+ prompt_options '1 临时隧道  2 固定隧道  3 状态  4 启动  5 停止  6 重启  7 刷新节点  8 卸载 Argo  9 地址族与传输设置  0 返回' '1 Quick  2 Named  3 Status  4 Start  5 Stop  6 Restart  7 Refresh nodes  8 Remove Argo  9 Address family/transport  0 Back'
  prompt_read '> ' choice || return 0
  case $choice in
   1) argo_install quick;; 2) argo_install named;; 3) argo_status;; 4) argo_start;;
-  5) argo_stop && exports;; 6) argo_stop && argo_start;; 7) exports;; 8) argo_remove;; 0) return 0;; *) err "$(L '无效选项' 'Invalid choice')"; return 1;;
+  5) argo_stop && exports;; 6) argo_stop && argo_start;; 7) exports;; 8) argo_remove;;9) argo_network_settings;; 0) return 0;; *) err "$(L '无效选项' 'Invalid choice')"; return 1;;
  esac
 }
 
@@ -1054,6 +1094,7 @@ PY
 # @include haproxy.sh
 
 # @include reliability.sh
+# @include rescue.sh
 
 # @include configuration.sh
 

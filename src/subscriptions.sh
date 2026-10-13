@@ -10,21 +10,24 @@ separator='-'*64
 node_name=s.get('node_name') or 'SKYBYTE'
 reality_name=node_name+'-Reality'; hy2_name=node_name+'-HY2'
 config=json.load(open(sys.argv[3])); inbound={i['type']:i for i in config['inbounds'] if i['type'] in ('vless','hysteria2')}
-if not inbound: raise ValueError('No supported installed protocols')
-mode='3' if len(inbound)==2 else '1' if 'vless' in inbound else '2'
+if not inbound and s.get('deployment')!='argo-only': raise ValueError('No supported installed protocols')
+mode='0' if not inbound else '3' if len(inbound)==2 else '1' if 'vless' in inbound else '2'
 if 'vless' in inbound:
  i=inbound['vless'];s.update(uuid=i['users'][0]['uuid'],sni=i['tls']['server_name'],sid=i['tls']['reality']['short_id'][0])
 if 'hysteria2' in inbound:
  i=inbound['hysteria2'];s.update(hy2_password=i['users'][0]['password'],domain=i['tls']['server_name'],cert_path=i['tls']['certificate_path'])
 d=s.get('domain','');sni=s.get('sni','')
 vp=inbound.get('vless',{}).get('listen_port',443); hp=inbound.get('hysteria2',{}).get('listen_port',443)
+export_ports=s.get('export_ports',{})
+vp=export_ports.get('vless',0) or vp;hp=export_ports.get('hysteria2',0) or hp
+assert type(vp) is int and type(hp) is int and 1<=vp<=65535 and 1<=hp<=65535
 cert_pem=None; fingerprint=None
 self_signed=s.get('cert_mode')=='1'
-if mode!='1':
+if 'hysteria2' in inbound:
  identity=subprocess.check_output(['openssl','x509','-in',s['cert_path'],'-noout','-issuer','-subject','-nameopt','RFC2253'],text=True).splitlines()
  names=[line.split('=',1)[1].strip() for line in identity]
  self_signed=self_signed or names[0]==names[1]
-if mode!='1' and self_signed:
+if 'hysteria2' in inbound and self_signed:
  import hashlib,ssl
  cert_pem=open(s['cert_path']).read()
  fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
@@ -34,8 +37,8 @@ hy2_extra={}
 if 'hysteria2' in inbound and inbound['hysteria2'].get('obfs'):
  ob=inbound['hysteria2']['obfs'];hy2_extra={'obfs':ob['type'],'obfs-password':ob['password']}
 h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),authority_ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}),**hy2_extra)),urllib.parse.quote(hy2_name,safe=''))
-links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
-link_names=[reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
+links=[] if mode=='0' else [v] if mode=='1' else [h] if mode=='2' else [v,h]
+link_names=[] if mode=='0' else [reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
 argo=None;argo_note=None;argo_name=node_name+'-Argo'
 argo_state=os.path.join(base,'argo-state.json');argo_conf=os.path.join(base,'argo-server.json')
 if os.path.isfile(argo_state):
@@ -63,6 +66,16 @@ subscription_text=base64.b64encode(node_text.encode()).decode()+'\n'
 write('nodes.txt',node_text); write('subscription-base64.txt',subscription_text)
 write('v2rayn-nodes.txt',node_text); write('v2rayn-subscription.txt',subscription_text)
 write('shadowrocket-nodes.txt',node_text); write('shadowrocket-subscription.txt',subscription_text)
+if not links:
+ # A stopped standalone tunnel must never export an old address or direct fallback.
+ for name in ('shadowrocket-native-nodes.txt','shadowrocket-native-subscription.txt'):write(name,'')
+ write('outbounds.json',json.dumps({'outbounds':[]})+'\n')
+ for name in ('sing-box-client.json','clash-verge.yaml','mihomo-proxies.yaml'):
+  path=os.path.join(base,name)
+  if os.path.islink(path):raise ValueError('Export symlink')
+  if os.path.isfile(path):os.remove(path)
+ message=argo_note or tr('尚无可用节点；请启动 Argo 隧道或添加直连协议。','No ready nodes; start Argo or add a direct protocol.')
+ write('subscription-notes.txt',message+'\n');print(message);sys.exit(0)
 # Shadowrocket's native VLESS dialect: base64(auto:UUID@host:port).
 # Keep standard exports intact for existing consumers.
 rocket_links=[]
@@ -84,10 +97,10 @@ write('shadowrocket-native-nodes.txt',rocket_text)
 write('shadowrocket-native-subscription.txt',base64.b64encode(rocket_text.encode()).decode()+'\n')
 
 out=[];proxy=[]
-if mode!='2':
+if 'vless' in inbound:
  out.append({'type':'vless','tag':reality_name,'server':ip,'server_port':vp,'uuid':s['uuid'],'flow':'xtls-rprx-vision','tls':{'enabled':True,'server_name':sni,'utls':{'enabled':True,'fingerprint':'chrome'},'reality':{'enabled':True,'public_key':s['public_key'],'short_id':s['sid']}}})
  proxy.append({'name':reality_name,'type':'vless','server':ip,'port':vp,'uuid':s['uuid'],'network':'tcp','tls':True,'servername':sni,'client-fingerprint':'chrome','flow':'xtls-rprx-vision','reality-opts':{'public-key':s['public_key'],'short-id':s['sid']}})
-if mode!='1':
+if 'hysteria2' in inbound:
  tls={'enabled':True,'server_name':d}
  if self_signed:tls['certificate']=cert_pem.splitlines()
  ho={'type':'hysteria2','tag':hy2_name,'server':ip,'server_port':hp,'password':s['hy2_password'],'tls':tls}
@@ -166,7 +179,7 @@ notes=[]
 if argo_note:notes.append(argo_note)
 if argo:
  notes.append(tr('Argo 使用 VLESS+WS+TLS，不是 Reality/Vision 或 HY2。临时隧道重启后请重新导入新地址。','Argo uses VLESS+WS+TLS, not Reality/Vision or HY2. Re-import changed Quick Tunnel hostnames after restarting.'))
-if mode!='1' and self_signed:
+if 'hysteria2' in inbound and self_signed:
  notes += [tr('无域名模式仍使用 TLS 自签名证书；只导入链接不会自动建立信任。','No-domain mode still uses self-signed TLS; importing a URI does not establish trust.'),
            tr('SHA-256 指纹：','SHA-256 fingerprint: ')+fingerprint,
            tr('sing-box JSON 和 Mihomo YAML 已包含公开信任证书。','sing-box JSON and Mihomo YAML include the trusted public certificate.'),

@@ -350,7 +350,8 @@ def restore_routing(base,conf,snapshot,binary):
         if prior:atomic(base/'warp-state.json',prior)
         raise
 
-def gateway(profile,port,target,binary):
+def gateway(profile,port,target,binary,family='auto'):
+    if family not in ('auto','4','6'):raise ValueError('Invalid native gateway family')
     p=configparser.ConfigParser(interpolation=None,strict=True)
     try:
         with open(profile) as f:p.read_file(f)
@@ -365,7 +366,13 @@ def gateway(profile,port,target,binary):
     if {ipaddress.ip_interface(x).version for x in addresses}!={4,6} or set(allowed)!={'0.0.0.0/0','::/0'}:raise ValueError('A dual-stack WARP profile is required')
     endpoint=b['endpoint'].strip();match=re.fullmatch(r'(?:\[([^]]+)\]|([^:\s]+)):(\d+)',endpoint)
     if not match:raise ValueError('Invalid peer Endpoint')
-    address=match[1] or match[2];peer_port=int(match[3])
+    address=relay_address(match[1] or match[2]);peer_port=int(match[3])
+    try:
+        native=ipaddress.ip_address(address)
+        if family!='auto' and native.version!=int(family):raise ValueError('WireGuard Endpoint does not match native connectivity; supply a reachable peer IP')
+    except ValueError:
+        # Distinguish a hostname from a numeric endpoint in the wrong family.
+        if re.fullmatch('[0-9a-fA-F:.]+',address):raise
     if not 1<=peer_port<=65535:raise ValueError('Invalid peer port')
     reserved=[int(x.strip()) for x in b.get('reserved','0,0,0').split(',')]
     if len(reserved)!=3 or any(not 0<=x<=255 for x in reserved):raise ValueError('Invalid reserved bytes')
@@ -378,7 +385,7 @@ def gateway(profile,port,target,binary):
          'dns':{'servers':[{'type':'https','tag':'warp-dns','server':'1.1.1.1','path':'/dns-query','detour':'warp-wg'},{'type':'local','tag':'bootstrap'}]},
          'route':{'final':'warp-wg','default_domain_resolver':'warp-dns'}}
     try:ipaddress.ip_address(address)
-    except ValueError:cfg['endpoints'][0]['domain_resolver']='bootstrap'
+    except ValueError:cfg['endpoints'][0]['domain_resolver']={'server':'bootstrap',**({'strategy':'ipv'+family+'_only'} if family!='auto' else {})}
     fd,tmp=tempfile.mkstemp(dir=target.parent)
     try:
         with os.fdopen(fd,'w') as f:json.dump(cfg,f)
@@ -423,7 +430,7 @@ if __name__=='__main__':
         except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):
             raise SystemExit('Relay operation failed; check protocol fields, trusted certificate and landing connectivity. TLS verification remains required.') from None
     elif action=='restore':restore_routing(base,conf,Path(args[0]),binary)
-    elif action=='gateway':gateway(args[0],int(args[1]),base/'warp-gateway.json',binary)
+    elif action=='gateway':gateway(args[0],int(args[1]),base/'warp-gateway.json',binary,args[2] if len(args)>2 else 'auto')
     elif action=='port':
         state=read_state(base)
         if not state or state.get('provider','warp')!='warp':raise ValueError('WARP routing is not configured; current provider is relay')

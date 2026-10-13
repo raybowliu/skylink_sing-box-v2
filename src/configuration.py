@@ -42,6 +42,16 @@ if action=='ports':
 elif action=='address':
  value=address(args[0])
  for _,_,_,s in paths:s['ip']=value
+elif action=='nat_exports':
+ value=address(args[0]);ports=[]
+ try:public_ip=ipaddress.ip_address(value)
+ except ValueError:public_ip=None
+ if public_ip is not None and not public_ip.is_global:raise ValueError('Supply a public NAT address')
+ for item in args[1:]:
+  if not item.isdecimal() or len(item)>5 or not 0<=int(item)<=65535:raise ValueError('Invalid public mapped port')
+  ports.append(int(item))
+ if len(ports)!=2:raise ValueError('Two mapped ports required')
+ meta['ip']=value;meta['export_ports']=dict(zip(('vless','hysteria2'),ports))
 elif action=='sni':
  value=address(args[0])
  if not any(i['type']=='vless' for i in main['inbounds']):raise ValueError('Reality is not installed')
@@ -59,17 +69,31 @@ elif action in ('add','remove'):
  protocol=args[0]
  if protocol not in ('vless','hysteria2'):raise ValueError('Unsupported protocol')
  existing={i['type'] for i in main['inbounds']}
+ bootstrap=action=='add' and not existing and meta.get('deployment')=='argo-only'
  if action=='remove':
   if protocol not in existing or len(existing)<2:raise ValueError('Cannot remove the final protocol')
   for _,cfg,_,_ in paths:cfg['inbounds']=[i for i in cfg['inbounds'] if i['type']!=protocol]
  else:
-  if protocol in existing:raise ValueError('Protocol already installed')
+  if protocol in existing or (not existing and not bootstrap):raise ValueError('No managed base protocol to extend')
   value=port(args[1])
-  with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',value))
+  listen=main['inbounds'][0]['listen'] if existing else meta.get('listen','0.0.0.0')
+  if bootstrap:
+   required=5 if protocol=='vless' else 6 if len(args)>3 and args[3]=='selfsigned' else 7
+   if len(args)<required:raise ValueError('Initial direct node needs an advertised address and bind family')
+   public=args[-2];listen=args[-1]
+   if listen not in ('::','0.0.0.0'):raise ValueError('Invalid listener family')
+   meta.update(ip=address(public),listen=listen,uuid=str(uuid.uuid4()),hy2_password=secrets.token_urlsafe(32))
+   meta.pop('deployment',None)
+  family=socket.AF_INET6 if ':' in listen else socket.AF_INET
+  sock=socket.socket(family,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM)
+  try:
+   if family==socket.AF_INET6:sock.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+   sock.bind(('::' if family==socket.AF_INET6 else '0.0.0.0',value))
+  finally:sock.close()
   if protocol=='vless':
    sni=address(args[2]);pairs=subprocess.check_output([binary,'generate','reality-keypair'],text=True);keys=dict(line.split(': ',1) for line in pairs.strip().splitlines())
    meta.update(public_key=keys['PublicKey'],sid=secrets.token_hex(4),sni=sni)
-   template={'type':'vless','tag':'reality','listen':main['inbounds'][0]['listen'],'listen_port':value,'users':[{'name':'user1','uuid':meta['uuid'],'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':keys['PrivateKey'],'short_id':[meta['sid']]}}}
+   template={'type':'vless','tag':'reality','listen':listen,'listen_port':value,'users':[{'name':'user1','uuid':meta['uuid'],'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':keys['PrivateKey'],'short_id':[meta['sid']]}}}
   else:
    domain=address(args[2]);cert_mode='2'
    if args[3]=='selfsigned':
@@ -85,7 +109,7 @@ elif action in ('add','remove'):
     meta['managed_certificates']=list(dict.fromkeys(meta.get('managed_certificates',[])+list(generated_cert)))
    else:cert,key=args[3:5]
    meta.update(domain=domain,cert_path=generated_cert[0] if generated_cert else cert,cert_mode=cert_mode)
-   template={'type':'hysteria2','tag':'hy2','listen':main['inbounds'][0]['listen'],'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
+   template={'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
   main['inbounds'].append(template)
   for p,cfg,_,s in paths[1:]:
    with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',cfg['inbounds'][0]['listen_port']))
@@ -123,8 +147,8 @@ def tls_check(i):
 
 planned=list(generated)
 for n,(p,cfg,mp,s) in enumerate(paths):
- types={i['type'] for i in cfg['inbounds']};s['mode']='3' if len(types)==2 else '1' if 'vless' in types else '2'
- if not cfg['inbounds']:raise ValueError('Account would have no protocol')
+ types={i['type'] for i in cfg['inbounds']};s['mode']='0' if not types else '3' if len(types)==2 else '1' if 'vless' in types else '2'
+ if not cfg['inbounds'] and not (p==conf and s.get('deployment')=='argo-only'):raise ValueError('Account would have no protocol')
  # Persist own private certificate copies for quota-managed accounts.
  for i in cfg['inbounds']:
   if i['type']=='hysteria2':tls_check(i)

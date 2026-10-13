@@ -255,6 +255,7 @@ with lock():
      for field,filename in [('certificate_path','certificate.crt'),('key_path','private.key')]:
       shutil.copyfile(inbound['tls'][field],p/filename);os.chmod(p/filename,0o600);inbound['tls'][field]=str(p/filename)
      metadata['cert_path']=str(p/'certificate.crt')
+   metadata.pop('export_ports',None)
    metadata.update(node_name=n,uuid=identity,hy2_password=password,hop=False,managed_certificates=[str(p/'certificate.crt'),str(p/'private.key')] if (p/'certificate.crt').exists() else [])
    atomic(p/'server.json',template);atomic(p/'state.json',metadata);config_check(p/'server.json')
    u={'id':uid,'name':n,'quota_bytes':q,'upload':0,'download':0,'expires_at':int(time.time())+valid,'enabled':True,'port':port,'api_port':controller,'api_secret':token,'running':False,'metering_blocked':False}
