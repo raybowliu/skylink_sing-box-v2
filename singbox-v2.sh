@@ -139,13 +139,20 @@ elif 'hysteria2' in p: print('2')
 else: raise ValueError('No supported installed protocols')
 PY
 }
-check_owned(){ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本部署的节点' 'No deployment managed by this script was found')"; return 1; }; }
+check_owned(){
+ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本部署的节点' 'No deployment managed by this script was found')"; return 1; }
+ local owned_path
+ for owned_path in "$BASE" "$META" "$CONF" "$BIN" "$BACKUP" "$(dirname "$CONF")";do
+  [[ ! -L $owned_path ]] || { err "$(L '托管路径是符号链接，拒绝修改' 'Managed path is a symlink; refusing changes')";return 1; }
+ done
+}
 backup(){
  check_owned || return 1
  local path file
  users_guard && warp_guard && acme_guard && online_guard && haproxy_guard || return 1
  path="$BACKUP/$(date +%Y%m%d-%H%M%S)-$RANDOM"
- mkdir -m 700 "$path" || return 1; cp -a "$(dirname "$CONF")" "$path/config" || return 1
+ mkdir -m 700 "$path" "$path/config" || return 1
+ cp "$CONF" "$path/config/config.json" || return 1
  cp "$META" "$path/state.json" || return 1
  cp "$BIN" "$path/sing-box.bin" || return 1
  if [[ -f "$BASE/hop.nft" ]]; then cp "$BASE/hop.nft" "$path/hop.nft" || return 1; fi
@@ -279,13 +286,16 @@ PY
  exports
 }
 write_config(){
- python3 - "$@" <<'PY'
-import json,sys
-conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
-node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
-vp=int(sys.argv[16]) if len(sys.argv)>16 else 443;hp=int(sys.argv[17]) if len(sys.argv)>17 else 443
+ # Credentials stay off process arguments; stdin contains the embedded program.
+ python3 - 3< <(printf '%s\0' "$@") <<'PY'
+import json,os
+with os.fdopen(3,'rb') as f:args=f.read().decode('utf-8').split('\0')
+if args.pop()!='':raise ValueError('Invalid config input')
+conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=args[:14]
+node_name=args[14] if len(args)>14 else 'SKYBYTE'
+vp=int(args[15]) if len(args)>15 else 443;hp=int(args[16]) if len(args)>16 else 443
 assert 1<=vp<=65535 and 1<=hp<=65535
-listen=sys.argv[18] if len(sys.argv)>18 and sys.argv[18] else ('::' if ':' in ip else '0.0.0.0')
+listen=args[17] if len(args)>17 and args[17] else ('::' if ':' in ip else '0.0.0.0')
 assert listen in ('::','0.0.0.0')
 d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':listen,'listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
@@ -882,31 +892,62 @@ status(){
  echo 'UFW:';firewall_audit;echo 'Hop:'
  if [[ -f $META && $(state hop_backend) == iptables ]];then iptables -w 5 -t nat -S SKYBYTE_HY2_HOP 2>/dev/null || :;else nft list table ip singbox_v2_hop 2>/dev/null || :;fi
 }
-restore(){
+restore() (
  check_owned || return 1
- local path snap
+ local path snap='' restore_stage='' restore_started=false restore_done=false service active enabled
+ trap restore_cleanup EXIT
  find "$BACKUP" -mindepth 1 -maxdepth 1 -type d | sort -r
  prompt_read "$(L '完整备份路径：' 'Full backup directory path: ')" path || return
  path=$(realpath "$path") || return 1
  [[ $path == "$(realpath "$BACKUP")/"* && -f $path/config/config.json && -f $path/sing-box.bin && -f $path/state.json ]] || { err "$(L '备份路径错误' 'Invalid backup path')"; return 1; }
  confirm "$(L '恢复配置并重启？' 'Restore configuration and restart?')" || return 0
- argo_guard || return 1
+ configuration_guard && argo_guard && hop_guard || return 1
  users_guard || return 1
  backup_engine preflight "$path" || return 1
  haproxy_engine check_configs "$path" || return 1
  snap=$(backup) || return 1
+ restore_stage=$(mktemp -d "$BASE/restore.XXXXXX") || return 1
+ backup_engine restore_plan "$path" "$restore_stage" || return 1
+ for service in skybyte-warp-gateway.service sing-box.service skybyte-argo-node.service skybyte-argo-tunnel.service skybyte-users.service singbox-v2-hop.service;do
+  [[ -f $SYSTEMD_DIR/$service ]] || continue
+  active=false;enabled=false
+  if systemctl is-active --quiet "$service";then active=true;fi
+  if systemctl is-enabled --quiet "$service";then enabled=true;fi
+  printf '%s %s %s\n' "$service" "$active" "$enabled" >> "$restore_stage/services"
+ done
+ restore_started=true
  users_stop || return 1
- cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
- command install -m 755 "$path/sing-box.bin" "$BIN" || return 1
- if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! admin_restart || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path" || ! auxiliary_restore_snapshot "$path"; then
-  cp -a "$snap/config/." "$(dirname "$CONF")"; cp "$snap/state.json" "$META"
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; admin_restart || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
-  err "$(L '恢复失败，已回滚' 'Restore failed; rolled back')"; return 1
- fi
+ backup_engine restore_apply "$restore_stage" || return 1
+ "$BIN" check -c "$CONF" && warp_restore_snapshot "$path" && admin_restart && argo_restore_snapshot "$path" && users_restore_snapshot "$path" || return 1
  # Hopping is host state: avoid restoring metadata claiming rules that are absent.
- systemctl disable --now singbox-v2-hop.service 2>/dev/null || :
- hop_disable
+ hop_disable || return 1
+ exports >/dev/null || return 1
+ if [[ -f $BASE/users.json ]];then users_engine export_all | while IFS= read -r service;do users_export "$service" >/dev/null || return 1;done || return 1;fi
+ auxiliary_restore_snapshot "$path" || return 1
+ restore_done=true
  ok "$(L '配置已恢复；需要跳跃时请重新开启' 'Configuration restored; re-enable hopping if needed')"
+)
+restore_cleanup(){
+ local rc=$? failed=false service active enabled
+ if [[ ${restore_started:-false} == true && ${restore_done:-false} != true ]];then
+  users_stop || failed=true
+  backup_engine restore_rollback "$restore_stage" || failed=true
+  warp_restore_snapshot "$snap" || failed=true
+  argo_restore_snapshot "$snap" || failed=true
+  users_restore_snapshot "$snap" || failed=true
+  if [[ -f $restore_stage/services ]];then
+   while read -r service active enabled;do
+    if [[ $enabled == true ]];then systemctl enable "$service" || failed=true;else systemctl disable "$service" || failed=true;fi
+    if [[ $active == true ]];then systemctl restart "$service" || failed=true;else systemctl stop "$service" || failed=true;fi
+   done < "$restore_stage/services"
+  fi
+  exports >/dev/null || failed=true
+  if [[ -f $BASE/users.json ]];then users_engine export_all | while IFS= read -r service;do users_export "$service" >/dev/null || return 1;done || failed=true;fi
+  if [[ $failed == true ]];then err "$(L "恢复失败，回滚未全部完成；保留事务：$restore_stage；备份：$snap" "Restore failed; rollback incomplete. Transaction retained: $restore_stage; backup: $snap")"
+  else err "$(L '恢复失败，已恢复原文件和服务状态' 'Restore failed; original files and service states restored')";fi
+ fi
+ if [[ -n ${restore_stage:-} && $failed == false ]];then rm -rf -- "$restore_stage";fi
+ return "$rc"
 }
 # Optional fresh-server preparation. No SSH, firewall, kernel or reboot changes.
 initialize_server(){
@@ -1143,14 +1184,18 @@ def block(u,reason,code=None):
 
 def expiry(u):return time.strftime('%Y-%m-%d %H:%M UTC',time.gmtime(u['expires_at']))
 
-def available_port(used,api=False):
+def available_port(used,api=False,listeners=None):
  for _ in range(300):
   n=20000+secrets.randbelow(40000)
   if n in used:continue
   with contextlib.ExitStack() as stack:
    try:
-    for family in [socket.SOCK_STREAM] if api else [socket.SOCK_STREAM,socket.SOCK_DGRAM]:
-     s=stack.enter_context(socket.socket(socket.AF_INET,family));s.bind(('127.0.0.1' if api else '0.0.0.0',n))
+    bindings=[('127.0.0.1',socket.SOCK_STREAM)] if api else listeners or [('0.0.0.0',socket.SOCK_STREAM),('0.0.0.0',socket.SOCK_DGRAM)]
+    for address,kind in dict.fromkeys(bindings):
+     family=socket.AF_INET6 if ':' in address else socket.AF_INET
+     s=stack.enter_context(socket.socket(family,kind))
+     if family==socket.AF_INET6:s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+     s.bind((address,n))
    except OSError:continue
   used.add(n);return n
  error('找不到可用端口','No free port available')
@@ -1294,6 +1339,19 @@ with lock():
   uid=secrets.token_hex(8);p=userdir(uid);p.mkdir(mode=0o700)
   try:
    used={u[k] for u in d['users'] for k in ['port','api_port']}
+   # Reserve configured ports even while their services are stopped.
+   for path in (pathlib.Path(conf),base/'argo-server.json',base/'warp-gateway.json'):
+    if path.exists() or path.is_symlink():
+     require(not path.is_symlink() and not path.parent.is_symlink() and path.stat().st_size<=4*1024**2)
+     cfg=json.loads(path.read_text())
+     for i in cfg.get('inbounds',[]):
+      require(type(i['listen_port']) is int and 1<=i['listen_port']<=65535);used.add(i['listen_port'])
+     controller=cfg.get('experimental',{}).get('clash_api',{}).get('external_controller')
+     if controller:used.add(int(controller.rsplit(':',1)[1]))
+   for path in (base/'subscriptions.json',base/'warp-client.json'):
+    if path.exists() or path.is_symlink():
+     require(not path.is_symlink() and path.stat().st_size<=131072)
+     number=json.loads(path.read_text())['port'];require(type(number) is int and 1<=number<=65535);used.add(number)
    relay_file=base/'haproxy/state.json'
    if relay_file.exists() or relay_file.is_symlink():
     require(not relay_file.is_symlink() and not relay_file.parent.is_symlink() and relay_file.stat().st_size<=131072)
@@ -1302,13 +1360,14 @@ with lock():
     for rule in relay['rules']:
      require(type(rule.get('port'))==int and 1<=rule['port']<=65535);used.add(rule['port'])
    if metadata.get('hop'):used.update(range(int(metadata['hop_start']),int(metadata['hop_end'])+1))
-   port=available_port(used);controller=available_port(used,True)
+   listeners=[(i['listen'],socket.SOCK_STREAM if i['type']=='vless' else socket.SOCK_DGRAM) for i in template['inbounds']]
+   port=available_port(used,listeners=listeners);controller=available_port(used,True)
    identity=str(uuid.uuid4());password=secrets.token_urlsafe(32);token=secrets.token_urlsafe(32)
    template['log']={'level':'warn','timestamp':True}
    template.pop('experimental',None)
    template['experimental']={'clash_api':{'external_controller':'127.0.0.1:'+str(controller),'secret':token}}
    for inbound in template['inbounds']:
-    inbound['listen_port']=port;inbound['listen']='::' if ':' in metadata['ip'] else '0.0.0.0'
+    inbound['listen_port']=port
     if inbound['type']=='vless':
      if not inbound.get('tls',{}).get('reality',{}).get('enabled'):error('只支持 Reality VLESS','Only Reality VLESS is supported')
      inbound['users']=[{'name':uid,'uuid':identity,'flow':'xtls-rprx-vision'}]
@@ -2341,11 +2400,13 @@ def fetch(url,path='4',port=None,post=False):
         text=body.read_bytes()[:8388608].decode('utf-8','replace') if body.exists() else ''
         return {'error':r.returncode!=0,'code':code,'body':text,'url':lines[1] if len(lines)>1 else url}
 
-def country(text,key):
+def country_values(text,key):
     # Handle both literal JSON and JSON strings embedded with escaped quotes.
     quote=r'(?:\\)?["\']'
-    m=re.search(quote+re.escape(key)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote,text)
-    return m[1].upper() if m else '-'
+    return list(dict.fromkeys(m[1].upper() for m in re.finditer(quote+re.escape(key)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote,text)))
+
+def country(text,key):
+    return next(iter(country_values(text,key)),'-')
 
 def url_region(response):
     url=response.get('url','')
@@ -2363,19 +2424,19 @@ def url_region(response):
 def region_hint(service,responses):
     hints=[]
     for response in responses:
+        if response.get('error') or response.get('code')!=200:continue
         body=html.unescape(response.get('body',''))
         found=False
         for fields in REGION_FIELDS.get(service,()):
             if len(fields)==2:
                 parent,child=fields
                 quote=r'(?:\\)?["\']'
-                pattern=quote+re.escape(parent)+quote+r'\s*:\s*\{.{0,512}?'+quote+re.escape(child)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote
-                match=re.search(pattern,body,re.S)
-                value=match[1].upper() if match else '-'
+                pattern=quote+re.escape(parent)+quote+r'\s*:\s*\{[^{}]{0,512}?'+quote+re.escape(child)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote
+                values=[match[1].upper() for match in re.finditer(pattern,body,re.S)]
                 source=parent+'.'+child
             else:
-                source=fields[0];value=country(body,source)
-            if value!='-':
+                source=fields[0];values=country_values(body,source)
+            for value in values:
                 hints.append((value,source))
                 found=True
         if not found:
@@ -2813,7 +2874,8 @@ def restore_routing(base,conf,snapshot,binary):
             if r.returncode:raise ValueError('Restored WARP config failed validation')
         finally:os.unlink(tmp)
     try:
-        for path,cfg in planned.items():atomic(path,cfg)
+        for path,cfg in planned.items():
+            if cfg!=originals[path]:atomic(path,cfg)
         if new:atomic(base/'warp-state.json',new)
         elif (base/'warp-state.json').exists():(base/'warp-state.json').unlink()
     except BaseException:
@@ -4049,9 +4111,60 @@ def managed():
   except (OSError,ValueError,KeyError):continue
  return [p for _,p in sorted(result,key=lambda t:(t[0],t[1].name),reverse=True)]
 
+def replace_file(path,data,mode=0o600):
+ if path.is_symlink() or path.parent.is_symlink():raise ValueError('Restore target symlink')
+ fd,tmp=tempfile.mkstemp(dir=path.parent)
+ try:
+  with os.fdopen(fd,'wb') as f:f.write(data);f.flush();os.fsync(f.fileno())
+  os.chmod(tmp,mode);os.replace(tmp,path)
+ finally:
+  if os.path.exists(tmp):os.unlink(tmp)
+
+def restore_targets():
+ return [(conf,'config/config.json',0o600),(base/'state.json','state.json',0o600),
+         (pathlib.Path(binary),'sing-box.bin',0o755),
+         (conf.parent/'hy2-backup.crt','config/hy2-backup.crt',0o600),
+         (conf.parent/'hy2-backup.key','config/hy2-backup.key',0o600)]
+
+def restore_stage(value):
+ p=pathlib.Path(value)
+ if p.is_symlink() or p.parent!=base or not p.name.startswith('restore.') or not p.is_dir():raise ValueError('Invalid restore transaction')
+ return p
+
+def restore_plan(root,value):
+ stage=restore_stage(value);plan=[]
+ for dest,name,mode in restore_targets():
+  source=root/name
+  if not source.exists():continue
+  if source.is_symlink() or not source.is_file() or dest.is_symlink() or dest.parent.is_symlink() or dest.exists() and not dest.is_file():raise ValueError('Unsafe restore file')
+  n=len(plan);candidate=stage/('new-'+str(n));old=stage/('old-'+str(n))
+  replace_file(candidate,source.read_bytes())
+  previous_mode=None
+  if dest.exists():previous_mode=dest.stat().st_mode&0o777;replace_file(old,dest.read_bytes())
+  plan.append({'target':str(dest),'mode':mode,'previous_mode':previous_mode,'index':n})
+ replace_file(stage/'transaction.json',json.dumps(plan).encode())
+
+def restore_files(value,rollback=False):
+ stage=restore_stage(value);plan=json.loads((stage/'transaction.json').read_text());allowed={str(p) for p,_,_ in restore_targets()}
+ for n,item in enumerate(plan):
+  dest=pathlib.Path(item['target']);mode=item['previous_mode'] if rollback else item['mode']
+  if str(dest) not in allowed or item['index']!=n or dest.is_symlink() or dest.parent.is_symlink():raise ValueError('Invalid restore journal')
+  if mode is None:
+   if dest.exists():
+    if dest.read_bytes()!=(stage/('new-'+str(n))).read_bytes():raise ValueError('Restore target changed; retained')
+    dest.unlink()
+  else:
+   if type(mode) is not int or not 0<=mode<=0o777:raise ValueError('Invalid restore mode')
+   source=stage/(('old-' if rollback else 'new-')+str(n))
+   if source.is_symlink() or not source.is_file():raise ValueError('Invalid restore source')
+   replace_file(dest,source.read_bytes(),mode)
+
 if action=='manifest':manifest(pathlib.Path(args[0]))
 elif action=='reseal':manifest(contained(args[0]),True)
 elif action=='preflight':check(contained(args[0]));print('Backup integrity/configuration preflight passed')
+elif action=='restore_plan':restore_plan(contained(args[0]),args[1])
+elif action=='restore_apply':restore_files(args[0])
+elif action=='restore_rollback':restore_files(args[0],True)
 elif action=='list':
  for p in managed():print(p.name+' | '+str(sum(f.stat().st_size for f in files(p).values()))+' bytes | '+str(p))
 elif action=='archive':
@@ -4360,6 +4473,10 @@ rescue_menu(){
    prompt_read "$(L '可信离线安装包目录（绝对路径；回车取消）：' 'Trusted offline asset directory (absolute; Enter cancels): ')" directory || return 0
    [[ -n $directory ]] || return 0
    [[ $directory == /* && -d $directory && ! -L $directory ]] || return 1
+   if [[ -n ${SKYBYTE_SESSION_FILE:-} ]];then
+    [[ -f $SKYBYTE_SESSION_FILE && ! -L $SKYBYTE_SESSION_FILE ]] || return 1
+    printf '%s\n' "$directory" > "$SKYBYTE_SESSION_FILE" || return 1
+   fi
    export SKYBYTE_ASSET_DIR=$directory
    say '已为当前脚本会话启用离线目录；下次运行需要重新选择。元数据与软件包都必须来自可信来源，校验不证明元数据本身未被篡改。' 'Offline directory enabled for this session; select it again next run. Both metadata and assets must be trusted; a checksum does not authenticate altered metadata.';;
   9) rescue_help;;0) return 0;;*) return 1;;
@@ -4402,6 +4519,18 @@ if (base/'users.json').exists():
   if not re.fullmatch('[0-9a-f]{16}',u['id']):raise ValueError('Invalid user ID')
   p=base/'users'/u['id'];paths.append((p/'server.json',load(p/'server.json'),p/'state.json',load(p/'state.json')))
 
+def check_admin_port(value,protocol,adding=False):
+ for _,cfg,_,_ in paths[1:]:
+  if any(i['listen_port']==value and (adding or i['type']==protocol) for i in cfg['inbounds']):raise ValueError('Port overlaps an account')
+  if protocol=='vless' and int(cfg.get('experimental',{}).get('clash_api',{}).get('external_controller','127.0.0.1:0').rsplit(':',1)[1])==value:raise ValueError('Port overlaps an account controller')
+ if protocol=='vless':
+  for p in (base/'argo-server.json',base/'warp-gateway.json'):
+   if p.exists() or p.is_symlink():
+    if any(i.get('type')!='hysteria2' and i.get('listen_port')==value for i in load(p).get('inbounds',[])):raise ValueError('Port reserved by a managed TCP service')
+  for p in (base/'subscriptions.json',base/'warp-client.json'):
+   if p.exists() or p.is_symlink():
+    if load(p)['port']==value:raise ValueError('Port reserved by a managed TCP service')
+
 # Any edit disables active host hopping; the wrapper stops owned rules.
 meta['hop']=False
 if action=='ports':
@@ -4409,13 +4538,12 @@ if action=='ports':
  for inbound in main['inbounds']:
   value=vp if inbound['type']=='vless' else hp
   if value==inbound['listen_port']:continue
-  if any(i['listen_port']==value and i['type']==inbound['type'] for _,cfg,_,_ in paths[1:] for i in cfg['inbounds']):raise ValueError('Port overlaps an account')
+  check_admin_port(value,inbound['type'])
   if inbound['type']=='hysteria2' and old_meta.get('hop') and old_meta['hop_start']<=value<=old_meta['hop_end']:raise ValueError('HY2 listener overlaps hopping range')
   family=socket.SOCK_STREAM if inbound['type']=='vless' else socket.SOCK_DGRAM
-  # Dual-stack binds cover both families on Linux; IPv4 fallback for hosts without IPv6.
-  try:s=socket.socket(socket.AF_INET6,family);s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
-  except OSError:s=socket.socket(socket.AF_INET,family)
-  with s:s.bind(('::' if s.family==socket.AF_INET6 else '0.0.0.0',value))
+  with socket.socket(socket.AF_INET6 if ':' in inbound['listen'] else socket.AF_INET,family) as s:
+   if s.family==socket.AF_INET6:s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+   s.bind((inbound['listen'],value))
   inbound['listen_port']=value
 elif action=='address':
  value=address(args[0])
@@ -4454,6 +4582,7 @@ elif action in ('add','remove'):
  else:
   if protocol in existing or (not existing and not bootstrap):raise ValueError('No managed base protocol to extend')
   value=port(args[1])
+  check_admin_port(value,protocol,True)
   listen=main['inbounds'][0]['listen'] if existing else meta.get('listen','0.0.0.0')
   if bootstrap:
    required=5 if protocol=='vless' else 6 if len(args)>3 and args[3]=='selfsigned' else 7
@@ -4490,7 +4619,10 @@ elif action in ('add','remove'):
    template={'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
   main['inbounds'].append(template)
   for p,cfg,_,s in paths[1:]:
-   with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',cfg['inbounds'][0]['listen_port']))
+   user_listen=cfg['inbounds'][0]['listen']
+   with socket.socket(socket.AF_INET6 if ':' in user_listen else socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:
+    if sock.family==socket.AF_INET6:sock.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+    sock.bind((user_listen,cfg['inbounds'][0]['listen_port']))
    inbound=copy.deepcopy(template);inbound['listen_port']=cfg['inbounds'][0]['listen_port'];inbound['listen']=cfg['inbounds'][0]['listen']
    inbound['users']=[{'name':p.parent.name,**({'uuid':s['uuid'],'flow':'xtls-rprx-vision'} if protocol=='vless' else {'password':s['hy2_password']})}]
    if protocol=='vless':s.update(public_key=meta['public_key'],sid=meta['sid'],sni=meta['sni'])
@@ -4571,7 +4703,8 @@ PY_INITIAL_ADMIN
   [[ $first_admin != true ]] || systemctl disable --now sing-box.service || :
   configuration_rollback "$stage" || :
   if [[ $hop_active == true ]];then systemctl start singbox-v2-hop.service || :;fi
-  warp_resume false "$argo" "$users" || :
+  [[ $first_admin != true ]] || admin=false
+  warp_resume "$admin" "$argo" "$users" || :
   rm -rf "$stage";err "$(L '配置修改失败，已尝试恢复原配置' 'Configuration edit failed; original config restoration attempted')";return 1
  fi
  rm -rf "$stage"
@@ -4775,7 +4908,7 @@ PY_ACME_STATE
 acme_use_hy2(){
  acme_guard && [[ -f $BASE/acme-state.json ]] || return 1
  [[ -f $CONF ]] || return 0
- if [[ $(protocol_mode) == 1 ]];then say 'HY2 尚未安装；可在添加 HY2 或在线订阅时使用此证书。' 'HY2 is not installed; use this certificate when adding HY2 or online subscriptions.';return 0;fi
+ if ! protocol_port hysteria2 >/dev/null 2>&1;then say 'HY2 尚未安装；可在添加 HY2 或在线订阅时使用此证书。' 'HY2 is not installed; use this certificate when adding HY2 or online subscriptions.';return 0;fi
  local domain
  domain=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["domain"])' "$BASE/acme-state.json") || return 1
  if confirm "$(L '将托管证书用于 HY2，保留密码和用量？' 'Use managed certificate for HY2, preserving passwords and usage?')";then
@@ -5293,9 +5426,11 @@ dispatch_action(){
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;
  esac
 }
-main(){
+main() (
  need_root; require_cmd flock
- local group action_status
+ local group action_status SKYBYTE_SESSION_FILE
+ SKYBYTE_SESSION_FILE=$(mktemp "$BASE/.session.XXXXXX") || return 1
+ trap 'rm -f -- "$SKYBYTE_SESSION_FILE"' EXIT
  retire_auto_update || return 1
  startup_info
  # An idle main menu must not hold off certificate renewal.
@@ -5337,14 +5472,20 @@ LOGO
   set -e
   flock -u 9
   if [[ $MAIN_ACTION == uninstall && $action_status == 0 && ! -e $META ]]; then return 0; fi
-  if [[ $MAIN_ACTION == manager_update && $action_status == 0 && -f $MANAGER_LIB ]] && ! grep -Fxq "MANAGER_VERSION=$MANAGER_VERSION" "$MANAGER_LIB"; then exec 9>&-; exec bash "$MANAGER_LIB"; fi
+  if [[ -s $SKYBYTE_SESSION_FILE ]];then IFS= read -r SKYBYTE_ASSET_DIR < "$SKYBYTE_SESSION_FILE";export SKYBYTE_ASSET_DIR;fi
+  if [[ $MAIN_ACTION == manager_update && $action_status == 0 && -f $MANAGER_LIB ]] && ! grep -Fxq "MANAGER_VERSION=$MANAGER_VERSION" "$MANAGER_LIB"; then rm -f -- "$SKYBYTE_SESSION_FILE";exec 9>&-; exec bash "$MANAGER_LIB"; fi
   load_language
  done
-}
+)
 
 bootstrap(){
  need_root
  require_cmd flock || return 1
+ local directory
+ for directory in "$BASE" "$REPORT" "$BACKUP";do
+  [[ ! -L $directory && ( ! -e $directory || -d $directory ) ]] || { err "$(L '管理目录异常，拒绝写入' 'Unsafe manager directory; refusing writes')";return 1; }
+ done
+ [[ ! -L $LANG_FILE && ( ! -e $LANG_FILE || -f $LANG_FILE ) && ! -L $LOCK && ( ! -e $LOCK || -f $LOCK ) ]] || { err "$(L '语言或锁文件异常，拒绝写入' 'Language/lock file is unsafe; refusing writes')";return 1; }
  mkdir -p "$BASE" "$REPORT" "$BACKUP"; chmod 700 "$BASE" "$REPORT" "$BACKUP"
  exec 9>"$LOCK"; flock -n 9 || { err "$(L '其他管理任务正在运行' 'Another manager is running')"; return 1; }
  load_language

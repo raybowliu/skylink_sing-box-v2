@@ -68,7 +68,7 @@ PY_ACME_STATE
 acme_use_hy2(){
  acme_guard && [[ -f $BASE/acme-state.json ]] || return 1
  [[ -f $CONF ]] || return 0
- if [[ $(protocol_mode) == 1 ]];then say 'HY2 尚未安装；可在添加 HY2 或在线订阅时使用此证书。' 'HY2 is not installed; use this certificate when adding HY2 or online subscriptions.';return 0;fi
+ if ! protocol_port hysteria2 >/dev/null 2>&1;then say 'HY2 尚未安装；可在添加 HY2 或在线订阅时使用此证书。' 'HY2 is not installed; use this certificate when adding HY2 or online subscriptions.';return 0;fi
  local domain
  domain=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["domain"])' "$BASE/acme-state.json") || return 1
  if confirm "$(L '将托管证书用于 HY2，保留密码和用量？' 'Use managed certificate for HY2, preserving passwords and usage?')";then

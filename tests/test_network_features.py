@@ -80,6 +80,10 @@ class FeaturesTest(unittest.TestCase):
         result=media.classify('Netflix',[self.response(r'{\"requestCountry\":{\"id\":\"HK\"},\"countryCode\":\"US\"}')])
         self.assertEqual(result['region'],'HK/US')
         self.assertEqual(result['region_source'],'requestCountry.id, countryCode')
+        result=media.classify('Amazon Prime Video',[self.response('{"countryCode":"US","details":{"countryCode":"HK"}}')])
+        self.assertEqual((result['region'],result['region_source']),('US/HK','countryCode'))
+        result=media.classify('Disney+',[self.response('{"countryCode":"US"}',code=403)])
+        self.assertEqual((result['region'],result['status']),('-','verification'))
 
     def test_streaming_location_restrictions_require_explicit_page_evidence(self):
         for service,body in (

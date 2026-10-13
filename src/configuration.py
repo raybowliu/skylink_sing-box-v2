@@ -24,6 +24,18 @@ if (base/'users.json').exists():
   if not re.fullmatch('[0-9a-f]{16}',u['id']):raise ValueError('Invalid user ID')
   p=base/'users'/u['id'];paths.append((p/'server.json',load(p/'server.json'),p/'state.json',load(p/'state.json')))
 
+def check_admin_port(value,protocol,adding=False):
+ for _,cfg,_,_ in paths[1:]:
+  if any(i['listen_port']==value and (adding or i['type']==protocol) for i in cfg['inbounds']):raise ValueError('Port overlaps an account')
+  if protocol=='vless' and int(cfg.get('experimental',{}).get('clash_api',{}).get('external_controller','127.0.0.1:0').rsplit(':',1)[1])==value:raise ValueError('Port overlaps an account controller')
+ if protocol=='vless':
+  for p in (base/'argo-server.json',base/'warp-gateway.json'):
+   if p.exists() or p.is_symlink():
+    if any(i.get('type')!='hysteria2' and i.get('listen_port')==value for i in load(p).get('inbounds',[])):raise ValueError('Port reserved by a managed TCP service')
+  for p in (base/'subscriptions.json',base/'warp-client.json'):
+   if p.exists() or p.is_symlink():
+    if load(p)['port']==value:raise ValueError('Port reserved by a managed TCP service')
+
 # Any edit disables active host hopping; the wrapper stops owned rules.
 meta['hop']=False
 if action=='ports':
@@ -31,13 +43,12 @@ if action=='ports':
  for inbound in main['inbounds']:
   value=vp if inbound['type']=='vless' else hp
   if value==inbound['listen_port']:continue
-  if any(i['listen_port']==value and i['type']==inbound['type'] for _,cfg,_,_ in paths[1:] for i in cfg['inbounds']):raise ValueError('Port overlaps an account')
+  check_admin_port(value,inbound['type'])
   if inbound['type']=='hysteria2' and old_meta.get('hop') and old_meta['hop_start']<=value<=old_meta['hop_end']:raise ValueError('HY2 listener overlaps hopping range')
   family=socket.SOCK_STREAM if inbound['type']=='vless' else socket.SOCK_DGRAM
-  # Dual-stack binds cover both families on Linux; IPv4 fallback for hosts without IPv6.
-  try:s=socket.socket(socket.AF_INET6,family);s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
-  except OSError:s=socket.socket(socket.AF_INET,family)
-  with s:s.bind(('::' if s.family==socket.AF_INET6 else '0.0.0.0',value))
+  with socket.socket(socket.AF_INET6 if ':' in inbound['listen'] else socket.AF_INET,family) as s:
+   if s.family==socket.AF_INET6:s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+   s.bind((inbound['listen'],value))
   inbound['listen_port']=value
 elif action=='address':
  value=address(args[0])
@@ -76,6 +87,7 @@ elif action in ('add','remove'):
  else:
   if protocol in existing or (not existing and not bootstrap):raise ValueError('No managed base protocol to extend')
   value=port(args[1])
+  check_admin_port(value,protocol,True)
   listen=main['inbounds'][0]['listen'] if existing else meta.get('listen','0.0.0.0')
   if bootstrap:
    required=5 if protocol=='vless' else 6 if len(args)>3 and args[3]=='selfsigned' else 7
@@ -112,7 +124,10 @@ elif action in ('add','remove'):
    template={'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':value,'users':[{'name':'user1','password':meta['hy2_password']}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}
   main['inbounds'].append(template)
   for p,cfg,_,s in paths[1:]:
-   with socket.socket(socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:sock.bind(('0.0.0.0',cfg['inbounds'][0]['listen_port']))
+   user_listen=cfg['inbounds'][0]['listen']
+   with socket.socket(socket.AF_INET6 if ':' in user_listen else socket.AF_INET,socket.SOCK_STREAM if protocol=='vless' else socket.SOCK_DGRAM) as sock:
+    if sock.family==socket.AF_INET6:sock.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+    sock.bind((user_listen,cfg['inbounds'][0]['listen_port']))
    inbound=copy.deepcopy(template);inbound['listen_port']=cfg['inbounds'][0]['listen_port'];inbound['listen']=cfg['inbounds'][0]['listen']
    inbound['users']=[{'name':p.parent.name,**({'uuid':s['uuid'],'flow':'xtls-rprx-vision'} if protocol=='vless' else {'password':s['hy2_password']})}]
    if protocol=='vless':s.update(public_key=meta['public_key'],sid=meta['sid'],sni=meta['sni'])

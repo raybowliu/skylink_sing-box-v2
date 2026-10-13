@@ -139,13 +139,20 @@ elif 'hysteria2' in p: print('2')
 else: raise ValueError('No supported installed protocols')
 PY
 }
-check_owned(){ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本部署的节点' 'No deployment managed by this script was found')"; return 1; }; }
+check_owned(){
+ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本部署的节点' 'No deployment managed by this script was found')"; return 1; }
+ local owned_path
+ for owned_path in "$BASE" "$META" "$CONF" "$BIN" "$BACKUP" "$(dirname "$CONF")";do
+  [[ ! -L $owned_path ]] || { err "$(L '托管路径是符号链接，拒绝修改' 'Managed path is a symlink; refusing changes')";return 1; }
+ done
+}
 backup(){
  check_owned || return 1
  local path file
  users_guard && warp_guard && acme_guard && online_guard && haproxy_guard || return 1
  path="$BACKUP/$(date +%Y%m%d-%H%M%S)-$RANDOM"
- mkdir -m 700 "$path" || return 1; cp -a "$(dirname "$CONF")" "$path/config" || return 1
+ mkdir -m 700 "$path" "$path/config" || return 1
+ cp "$CONF" "$path/config/config.json" || return 1
  cp "$META" "$path/state.json" || return 1
  cp "$BIN" "$path/sing-box.bin" || return 1
  if [[ -f "$BASE/hop.nft" ]]; then cp "$BASE/hop.nft" "$path/hop.nft" || return 1; fi
@@ -279,13 +286,16 @@ PY
  exports
 }
 write_config(){
- python3 - "$@" <<'PY'
-import json,sys
-conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
-node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
-vp=int(sys.argv[16]) if len(sys.argv)>16 else 443;hp=int(sys.argv[17]) if len(sys.argv)>17 else 443
+ # Credentials stay off process arguments; stdin contains the embedded program.
+ python3 - 3< <(printf '%s\0' "$@") <<'PY'
+import json,os
+with os.fdopen(3,'rb') as f:args=f.read().decode('utf-8').split('\0')
+if args.pop()!='':raise ValueError('Invalid config input')
+conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=args[:14]
+node_name=args[14] if len(args)>14 else 'SKYBYTE'
+vp=int(args[15]) if len(args)>15 else 443;hp=int(args[16]) if len(args)>16 else 443
 assert 1<=vp<=65535 and 1<=hp<=65535
-listen=sys.argv[18] if len(sys.argv)>18 and sys.argv[18] else ('::' if ':' in ip else '0.0.0.0')
+listen=args[17] if len(args)>17 and args[17] else ('::' if ':' in ip else '0.0.0.0')
 assert listen in ('::','0.0.0.0')
 d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':listen,'listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
@@ -544,31 +554,62 @@ status(){
  echo 'UFW:';firewall_audit;echo 'Hop:'
  if [[ -f $META && $(state hop_backend) == iptables ]];then iptables -w 5 -t nat -S SKYBYTE_HY2_HOP 2>/dev/null || :;else nft list table ip singbox_v2_hop 2>/dev/null || :;fi
 }
-restore(){
+restore() (
  check_owned || return 1
- local path snap
+ local path snap='' restore_stage='' restore_started=false restore_done=false service active enabled
+ trap restore_cleanup EXIT
  find "$BACKUP" -mindepth 1 -maxdepth 1 -type d | sort -r
  prompt_read "$(L '完整备份路径：' 'Full backup directory path: ')" path || return
  path=$(realpath "$path") || return 1
  [[ $path == "$(realpath "$BACKUP")/"* && -f $path/config/config.json && -f $path/sing-box.bin && -f $path/state.json ]] || { err "$(L '备份路径错误' 'Invalid backup path')"; return 1; }
  confirm "$(L '恢复配置并重启？' 'Restore configuration and restart?')" || return 0
- argo_guard || return 1
+ configuration_guard && argo_guard && hop_guard || return 1
  users_guard || return 1
  backup_engine preflight "$path" || return 1
  haproxy_engine check_configs "$path" || return 1
  snap=$(backup) || return 1
+ restore_stage=$(mktemp -d "$BASE/restore.XXXXXX") || return 1
+ backup_engine restore_plan "$path" "$restore_stage" || return 1
+ for service in skybyte-warp-gateway.service sing-box.service skybyte-argo-node.service skybyte-argo-tunnel.service skybyte-users.service singbox-v2-hop.service;do
+  [[ -f $SYSTEMD_DIR/$service ]] || continue
+  active=false;enabled=false
+  if systemctl is-active --quiet "$service";then active=true;fi
+  if systemctl is-enabled --quiet "$service";then enabled=true;fi
+  printf '%s %s %s\n' "$service" "$active" "$enabled" >> "$restore_stage/services"
+ done
+ restore_started=true
  users_stop || return 1
- cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
- command install -m 755 "$path/sing-box.bin" "$BIN" || return 1
- if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! admin_restart || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path" || ! auxiliary_restore_snapshot "$path"; then
-  cp -a "$snap/config/." "$(dirname "$CONF")"; cp "$snap/state.json" "$META"
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; admin_restart || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
-  err "$(L '恢复失败，已回滚' 'Restore failed; rolled back')"; return 1
- fi
+ backup_engine restore_apply "$restore_stage" || return 1
+ "$BIN" check -c "$CONF" && warp_restore_snapshot "$path" && admin_restart && argo_restore_snapshot "$path" && users_restore_snapshot "$path" || return 1
  # Hopping is host state: avoid restoring metadata claiming rules that are absent.
- systemctl disable --now singbox-v2-hop.service 2>/dev/null || :
- hop_disable
+ hop_disable || return 1
+ exports >/dev/null || return 1
+ if [[ -f $BASE/users.json ]];then users_engine export_all | while IFS= read -r service;do users_export "$service" >/dev/null || return 1;done || return 1;fi
+ auxiliary_restore_snapshot "$path" || return 1
+ restore_done=true
  ok "$(L '配置已恢复；需要跳跃时请重新开启' 'Configuration restored; re-enable hopping if needed')"
+)
+restore_cleanup(){
+ local rc=$? failed=false service active enabled
+ if [[ ${restore_started:-false} == true && ${restore_done:-false} != true ]];then
+  users_stop || failed=true
+  backup_engine restore_rollback "$restore_stage" || failed=true
+  warp_restore_snapshot "$snap" || failed=true
+  argo_restore_snapshot "$snap" || failed=true
+  users_restore_snapshot "$snap" || failed=true
+  if [[ -f $restore_stage/services ]];then
+   while read -r service active enabled;do
+    if [[ $enabled == true ]];then systemctl enable "$service" || failed=true;else systemctl disable "$service" || failed=true;fi
+    if [[ $active == true ]];then systemctl restart "$service" || failed=true;else systemctl stop "$service" || failed=true;fi
+   done < "$restore_stage/services"
+  fi
+  exports >/dev/null || failed=true
+  if [[ -f $BASE/users.json ]];then users_engine export_all | while IFS= read -r service;do users_export "$service" >/dev/null || return 1;done || failed=true;fi
+  if [[ $failed == true ]];then err "$(L "恢复失败，回滚未全部完成；保留事务：$restore_stage；备份：$snap" "Restore failed; rollback incomplete. Transaction retained: $restore_stage; backup: $snap")"
+  else err "$(L '恢复失败，已恢复原文件和服务状态' 'Restore failed; original files and service states restored')";fi
+ fi
+ if [[ -n ${restore_stage:-} && $failed == false ]];then rm -rf -- "$restore_stage";fi
+ return "$rc"
 }
 # Optional fresh-server preparation. No SSH, firewall, kernel or reboot changes.
 initialize_server(){

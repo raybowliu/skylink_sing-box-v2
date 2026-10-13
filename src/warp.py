@@ -342,7 +342,8 @@ def restore_routing(base,conf,snapshot,binary):
             if r.returncode:raise ValueError('Restored WARP config failed validation')
         finally:os.unlink(tmp)
     try:
-        for path,cfg in planned.items():atomic(path,cfg)
+        for path,cfg in planned.items():
+            if cfg!=originals[path]:atomic(path,cfg)
         if new:atomic(base/'warp-state.json',new)
         elif (base/'warp-state.json').exists():(base/'warp-state.json').unlink()
     except BaseException:

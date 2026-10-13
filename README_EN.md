@@ -8,6 +8,8 @@ If you find this script helpful, please subscribe to my YouTube channel and supp
 
 The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential links bold red, warnings bold yellow and errors bold red on ANSI terminals. Set `NO_COLOR=1` to disable colors. Every YES confirmation is case-insensitive.
 
+V2.8.1 whole-source audit fixes: the installer checks ownership and atomically publishes the manager, rejecting symlinks and concurrent operations. Restore journals original files privately, rolls back files/service states on failure, and preserves unrelated configuration files. User allocation reserves inactive managed ports and inherits the actual listener family. Node-edit rollback reloads the original admin config; offline selection survives menu actions; standalone Argo certificate issuance no longer prompts to configure absent HY2. Initial generation passes UUIDs, passwords and private keys through a file descriptor instead of process arguments. Media results show region sources/conflicts without claiming account eligibility or playback.
+
 ## Quick navigation
 
 - [Ubuntu/Debian VPS installation](#ubuntudebian-vps-installation)
@@ -33,6 +35,8 @@ bash install.sh
 ```
 
 Until the development branch is merged, that command installs the main version. To test this branch, clone the repository, switch to the branch and run `bash ./singbox-v2.sh` as root. Review downloaded scripts before execution.
+
+The entry point updates only identifiable SKYBYTE Manager files and preserves the current copy on download/validation failure. The installation directory, target script and operation lock must not be symlinks. Retry after any active management operation completes.
 
 Fresh installation uses the official sing-box 1.14.3 binary tested for this manager release and verifies its SHA-256 digest against GitHub Release metadata. It does not run a remote package installer. Choose a language at first launch; it is saved in `/etc/singbox-v2/language.conf`. Menu **6 → 1** changes language.
 
@@ -104,7 +108,7 @@ Hopping is off by default, under **4 → 5**, with nftables (default) or iptable
 
 Updates back up first, download and check a candidate binary, then replace the binary, restart and check service health. Startup failures restore the previous binary. Manual updates require confirmation. Weekly automatic updates have been removed. Startup backs up and retires owned legacy update units, preserving modified or unowned units. Service health alone does not prove client connectivity.
 
-New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including snapshots of external TLS certificate/key files. Restore backs up the current deployment and attempts rollback on failure. It disables managed hopping and clears its state; re-enable hopping when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
+New backups use separate `config/`, `state.json` and `sing-box.bin` paths, including external TLS certificate/key snapshots. Restore backs up the deployment and journals original file contents/modes privately, publishing each managed config/certificate/binary atomically. Failure rolls back files and original service activity/boot states; incomplete rollback is reported with retained transaction/backup paths. Unrelated configuration files are preserved. Success refreshes client exports and disables managed hopping; re-enable it when required. Other nftables tables are untouched. The old broken directory/binary backup layout is not directly supported. Backups are not automatically pruned; protect disk space and private keys.
 
 ## Validation
 
@@ -119,6 +123,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 Set `SING_BOX_BIN` and `MIHOMO_BIN` to include real engine validation: all three server modes, Mihomo YAML parsing, and local forwarding through HY2 with sing-box/Mihomo clients. Mihomo tests require PyYAML. Credentials and certificates are generated in temporary directories and are never committed.
+
+Local tests require Python 3.9+, PyYAML and OpenSSL with `x509 -checkhost/-checkip`. The old macOS system LibreSSL is unsuitable; select OpenSSL 3 through `OPENSSL_BIN` and the executable search path. Set `HAPROXY_BIN` for real TCP passthrough tests. Tests requiring unavailable protocol engines, HAProxy or GnuPG are skipped, which does not establish that functionality was verified.
 
 GitHub Actions runs checks in Ubuntu 24.04 and Debian 12 containers. See [audit and testing notes](docs/TESTING.md). Local handshakes do not replace live VPS tests of provider firewalls, UDP NAT, systemd startup or Shadowrocket/v2rayN GUI imports. Validate these on a disposable VPS with snapshots and console access.
 
@@ -365,7 +371,7 @@ TCP forwarding and validation follow the [HAProxy TCP documentation](https://www
 
 ### Which VPS operating systems does SKYBYTE Manager support?
 
-Ubuntu/Debian VPS instances using systemd, on x86_64 or arm64. Management requires root. Automated tests cover Ubuntu 24.04 and Debian 12; validate other versions before deployment.
+Ubuntu/Debian VPS instances using systemd. Official asset mappings cover amd64, arm64, armv7 and 386; management requires root. Automated tests cover Ubuntu 24.04 and Debian 12 on amd64; validate other versions and architectures before deployment.
 
 ### Does Hysteria2 require a domain and a purchased certificate?
 

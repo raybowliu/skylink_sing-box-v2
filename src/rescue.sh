@@ -114,6 +114,10 @@ rescue_menu(){
    prompt_read "$(L '可信离线安装包目录（绝对路径；回车取消）：' 'Trusted offline asset directory (absolute; Enter cancels): ')" directory || return 0
    [[ -n $directory ]] || return 0
    [[ $directory == /* && -d $directory && ! -L $directory ]] || return 1
+   if [[ -n ${SKYBYTE_SESSION_FILE:-} ]];then
+    [[ -f $SKYBYTE_SESSION_FILE && ! -L $SKYBYTE_SESSION_FILE ]] || return 1
+    printf '%s\n' "$directory" > "$SKYBYTE_SESSION_FILE" || return 1
+   fi
    export SKYBYTE_ASSET_DIR=$directory
    say '已为当前脚本会话启用离线目录；下次运行需要重新选择。元数据与软件包都必须来自可信来源，校验不证明元数据本身未被篡改。' 'Offline directory enabled for this session; select it again next run. Both metadata and assets must be trusted; a checksum does not authenticate altered metadata.';;
   9) rescue_help;;0) return 0;;*) return 1;;

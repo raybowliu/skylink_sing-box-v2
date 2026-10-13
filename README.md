@@ -8,6 +8,8 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 
 主菜单包含 SKYBYTE ASCII logo；菜单绿色加粗、节点链接红色加粗、警告黄色加粗、错误红色加粗。支持 ANSI 的交互终端显示颜色，`NO_COLOR=1` 可关闭。所有 `YES` 确认不区分大小写。
 
+V2.8.1 完整源码审计修复：一键入口验证目标归属并原子替换脚本，拒绝软链接和并发管理任务；恢复采用私密事务日志，失败恢复原文件及原服务状态，不覆盖配置目录里的无关文件；用户端口预留涵盖未启动的托管服务，并沿用真实监听地址族；修复节点编辑回滚后管理员服务未重载、离线目录选择不跨菜单生效，以及独立 Argo 申请证书后的 HY2 提示。首次配置生成通过文件描述符传递 UUID、密码和私钥，避免放进进程参数。流媒体地区检测显示字段来源和冲突结果，仍不验证账号资格或实际播放。
+
 ## 快速导航
 
 - [Ubuntu/Debian VPS 一键安装](#ubuntudebian-vps-一键安装)
@@ -33,6 +35,8 @@ bash install.sh
 ```
 
 开发分支未合并时，上述命令仍安装 main 版本。测试当前分支可先克隆仓库并切换到对应分支，再以 root 账号运行 `bash ./singbox-v2.sh`。建议先审阅下载的脚本。
+
+一键入口只更新可识别的 SKYBYTE Manager 脚本，下载/语法检查失败保留原副本；安装目录、目标脚本和操作锁不能为软链接。已有管理任务执行中时，请等待任务完成后重试。
 
 首次安装使用本版已测试的 sing-box 1.14.3 官方二进制，按 GitHub Release API 的 SHA-256 摘要检查下载，不执行远程软件包安装脚本。首次启动选择语言，保存于 `/etc/singbox-v2/language.conf`，菜单 **6 → 1** 切换语言。
 
@@ -104,7 +108,7 @@ HY2 跳跃默认关闭，入口 **4 → 5**，可选择 nftables（默认）或 
 
 更新先备份，再下载并检查候选二进制，配置检查通过后替换、重启并检查服务状态；启动失败恢复旧二进制。手动更新需要确认。每周自动更新选项已移除；新版启动会备份并停用归属本工具的旧更新单元，被修改或不属于本工具的单元保留。服务状态不等于端到端可达。
 
-新备份使用 `config/`、`state.json`、`sing-box.bin` 独立路径，包含已有外部证书/私钥的快照。恢复前备份当前配置，失败尝试回滚。恢复后关闭托管跳跃并更新状态，需要时重新开启；不会替换其他 nftables 表。旧版目录/二进制同名备份格式不能直接恢复。备份不自动删除，请保护磁盘空间和私钥。
+新备份使用 `config/`、`state.json`、`sing-box.bin` 独立路径，包含已有外部证书/私钥的快照。恢复前备份当前配置，并在私密事务目录保存原文件及权限；配置、证书与二进制逐文件原子写入。任一阶段失败时回滚并恢复原服务启停/自启状态；若回滚未能全部完成，明确报告并保留事务目录和备份供人工恢复。只恢复托管配置与证书，不覆盖配置目录里的无关文件；成功后刷新客户端导出并关闭托管跳跃，需要时重新开启。不会替换其他 nftables 表。旧版目录/二进制同名备份格式不能直接恢复。备份不自动删除，请保护磁盘空间和私钥。
 
 ## 测试与范围
 
@@ -119,6 +123,8 @@ python3 -m unittest discover -s tests -v
 ```
 
 设置 `SING_BOX_BIN`、`MIHOMO_BIN` 后，测试包含实际 sing-box 三种服务端配置检查、Mihomo YAML 检查，以及 sing-box/Mihomo 客户端连接 HY2 服务端的本地转发。Mihomo 测试需要 PyYAML。凭据与证书在临时目录运行时生成，不提交仓库。
+
+本地测试需 Python 3.9+、PyYAML 和支持 `x509 -checkhost/-checkip` 的 OpenSSL；macOS 自带旧 LibreSSL 不适合作为该测试环境，可通过 `OPENSSL_BIN` 和命令搜索路径选择 OpenSSL 3。设置 `HAPROXY_BIN` 可运行真实 TCP 透传测试。缺少协议引擎、HAProxy 或 GnuPG 时相应实测会跳过，不能视为已验证。
 
 GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审计与测试记录](docs/TESTING.md)。本地握手不能代替真实 VPS 的云防火墙、UDP NAT、systemd 启动和 Shadowrocket/v2rayN 图形客户端导入测试；这些项目须在有快照和控制台的 VPS 上验证。
 
@@ -365,7 +371,7 @@ TCP 转发能力与配置校验参考 [HAProxy TCP 文档](https://www.haproxy.c
 
 ### SKYBYTE Manager 支持哪些 VPS 系统？
 
-支持使用 systemd 的 Ubuntu/Debian VPS，架构为 x86_64 或 arm64，运行管理功能需要 root 权限。自动化测试覆盖 Ubuntu 24.04 和 Debian 12；其他系统版本需自行验证。
+支持使用 systemd 的 Ubuntu/Debian VPS，官方资产映射支持 amd64、arm64、armv7 和 386，运行管理功能需要 root 权限。自动化测试覆盖 Ubuntu 24.04 和 Debian 12 的 amd64 环境；其他系统版本与架构需自行验证。
 
 ### Hysteria2 必须购买域名和证书吗？
 

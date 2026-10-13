@@ -64,11 +64,13 @@ def fetch(url,path='4',port=None,post=False):
         text=body.read_bytes()[:8388608].decode('utf-8','replace') if body.exists() else ''
         return {'error':r.returncode!=0,'code':code,'body':text,'url':lines[1] if len(lines)>1 else url}
 
-def country(text,key):
+def country_values(text,key):
     # Handle both literal JSON and JSON strings embedded with escaped quotes.
     quote=r'(?:\\)?["\']'
-    m=re.search(quote+re.escape(key)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote,text)
-    return m[1].upper() if m else '-'
+    return list(dict.fromkeys(m[1].upper() for m in re.finditer(quote+re.escape(key)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote,text)))
+
+def country(text,key):
+    return next(iter(country_values(text,key)),'-')
 
 def url_region(response):
     url=response.get('url','')
@@ -86,19 +88,19 @@ def url_region(response):
 def region_hint(service,responses):
     hints=[]
     for response in responses:
+        if response.get('error') or response.get('code')!=200:continue
         body=html.unescape(response.get('body',''))
         found=False
         for fields in REGION_FIELDS.get(service,()):
             if len(fields)==2:
                 parent,child=fields
                 quote=r'(?:\\)?["\']'
-                pattern=quote+re.escape(parent)+quote+r'\s*:\s*\{.{0,512}?'+quote+re.escape(child)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote
-                match=re.search(pattern,body,re.S)
-                value=match[1].upper() if match else '-'
+                pattern=quote+re.escape(parent)+quote+r'\s*:\s*\{[^{}]{0,512}?'+quote+re.escape(child)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote
+                values=[match[1].upper() for match in re.finditer(pattern,body,re.S)]
                 source=parent+'.'+child
             else:
-                source=fields[0];value=country(body,source)
-            if value!='-':
+                source=fields[0];values=country_values(body,source)
+            for value in values:
                 hints.append((value,source))
                 found=True
         if not found:

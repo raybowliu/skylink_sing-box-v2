@@ -42,3 +42,14 @@ acme/
 core-version.json
 warp-rules.previous.json
 *.gpg
+/config.json
+/server.json
+/backups/
+/manager-backups/
+/haproxy/
+/haproxy-backups/
+/reports/
+/hop.nft
+/hop-iptables.sh
+/certificate-status.json
+*.lock

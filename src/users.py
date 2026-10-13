@@ -81,14 +81,18 @@ def block(u,reason,code=None):
 
 def expiry(u):return time.strftime('%Y-%m-%d %H:%M UTC',time.gmtime(u['expires_at']))
 
-def available_port(used,api=False):
+def available_port(used,api=False,listeners=None):
  for _ in range(300):
   n=20000+secrets.randbelow(40000)
   if n in used:continue
   with contextlib.ExitStack() as stack:
    try:
-    for family in [socket.SOCK_STREAM] if api else [socket.SOCK_STREAM,socket.SOCK_DGRAM]:
-     s=stack.enter_context(socket.socket(socket.AF_INET,family));s.bind(('127.0.0.1' if api else '0.0.0.0',n))
+    bindings=[('127.0.0.1',socket.SOCK_STREAM)] if api else listeners or [('0.0.0.0',socket.SOCK_STREAM),('0.0.0.0',socket.SOCK_DGRAM)]
+    for address,kind in dict.fromkeys(bindings):
+     family=socket.AF_INET6 if ':' in address else socket.AF_INET
+     s=stack.enter_context(socket.socket(family,kind))
+     if family==socket.AF_INET6:s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,0)
+     s.bind((address,n))
    except OSError:continue
   used.add(n);return n
  error('找不到可用端口','No free port available')
@@ -232,6 +236,19 @@ with lock():
   uid=secrets.token_hex(8);p=userdir(uid);p.mkdir(mode=0o700)
   try:
    used={u[k] for u in d['users'] for k in ['port','api_port']}
+   # Reserve configured ports even while their services are stopped.
+   for path in (pathlib.Path(conf),base/'argo-server.json',base/'warp-gateway.json'):
+    if path.exists() or path.is_symlink():
+     require(not path.is_symlink() and not path.parent.is_symlink() and path.stat().st_size<=4*1024**2)
+     cfg=json.loads(path.read_text())
+     for i in cfg.get('inbounds',[]):
+      require(type(i['listen_port']) is int and 1<=i['listen_port']<=65535);used.add(i['listen_port'])
+     controller=cfg.get('experimental',{}).get('clash_api',{}).get('external_controller')
+     if controller:used.add(int(controller.rsplit(':',1)[1]))
+   for path in (base/'subscriptions.json',base/'warp-client.json'):
+    if path.exists() or path.is_symlink():
+     require(not path.is_symlink() and path.stat().st_size<=131072)
+     number=json.loads(path.read_text())['port'];require(type(number) is int and 1<=number<=65535);used.add(number)
    relay_file=base/'haproxy/state.json'
    if relay_file.exists() or relay_file.is_symlink():
     require(not relay_file.is_symlink() and not relay_file.parent.is_symlink() and relay_file.stat().st_size<=131072)
@@ -240,13 +257,14 @@ with lock():
     for rule in relay['rules']:
      require(type(rule.get('port'))==int and 1<=rule['port']<=65535);used.add(rule['port'])
    if metadata.get('hop'):used.update(range(int(metadata['hop_start']),int(metadata['hop_end'])+1))
-   port=available_port(used);controller=available_port(used,True)
+   listeners=[(i['listen'],socket.SOCK_STREAM if i['type']=='vless' else socket.SOCK_DGRAM) for i in template['inbounds']]
+   port=available_port(used,listeners=listeners);controller=available_port(used,True)
    identity=str(uuid.uuid4());password=secrets.token_urlsafe(32);token=secrets.token_urlsafe(32)
    template['log']={'level':'warn','timestamp':True}
    template.pop('experimental',None)
    template['experimental']={'clash_api':{'external_controller':'127.0.0.1:'+str(controller),'secret':token}}
    for inbound in template['inbounds']:
-    inbound['listen_port']=port;inbound['listen']='::' if ':' in metadata['ip'] else '0.0.0.0'
+    inbound['listen_port']=port
     if inbound['type']=='vless':
      if not inbound.get('tls',{}).get('reality',{}).get('enabled'):error('只支持 Reality VLESS','Only Reality VLESS is supported')
      inbound['users']=[{'name':uid,'uuid':identity,'flow':'xtls-rprx-vision'}]
