@@ -18,6 +18,7 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 - [WARP 出站与双栈](#warp-出站与双栈v24)
 - [个人 HTTPS 在线订阅](#每人独立-https-在线订阅v25)
 - [住宅 IP 落地与 VPS 中转](#住宅-ip-落地与-vps-中转v26)
+- [HAProxy TCP 透传](#haproxy-tcp-透传v27)
 - [源码模块与构建](#源码模块与构建) · [测试与范围](#测试与范围)
 - [常见问题](#常见问题) · [VPS 服务商推广链接](#vps-服务商推广链接)
 
@@ -43,7 +44,7 @@ bash install.sh
 | 1 | 节点安装 | Reality / HY2 / 双协议；临时 / 固定隧道；参数修改 / 协议增删 |
 | 2 | 节点与订阅 | 节点信息 / 订阅导出 / 自定义名称 / 小火箭二维码 / 用户管理 / HTTPS个人订阅 |
 | 3 | 服务与日志 | 服务控制 / 日志 / Argo 状态 |
-| 4 | 服务器与网络 | 初始化 / UFW / 防火墙 / BBR / 跳跃 / 流量 / 资源 / 流媒体 / WARP / 住宅落地中转 |
+| 4 | 服务器与网络 | 初始化 / UFW / 防火墙 / BBR / 跳跃 / 流量 / 资源 / 流媒体 / WARP / sing-box 中转 / HAProxy TCP 透传 |
 | 5 | 更新与备份 | 内核版本 / 备份 / 恢复 / 管理脚本更新 / 证书管理 / ACME / 加密备份 |
 | 6 | 设置与卸载 | 语言 / 隐私声明 / 卸载 / 使用说明 |
 | 7 | 用户与配额 | 人数 / 用量 / 额度 / 有效期 / 故障诊断 / 资源 |
@@ -172,7 +173,7 @@ GitHub Actions 在 Ubuntu 24.04 和 Debian 12 容器执行检查。详见 [审�
 
 ## 源码模块与构建
 
-维护源码在 `src/`：`manager.sh` 为基础服务及安装逻辑，`subscriptions.sh` 为订阅导出，`users.sh` 为用户界面/服务，`users.py` 为配额与诊断，`operations.sh` 为更新/证书/资源，`menu.sh` 为主菜单及启动入口；`hopping.sh` 管理 UDP 跳跃，`media.sh`/`media.py` 检测流媒体，`warp.sh`/`warp.py` 管理 WARP 网关与托管路由，`relay.sh` 提供住宅落地中转界面；`configuration.sh`/`configuration.py` 编辑节点，`acme.sh` 管理证书申请，`online.sh`/`online.py` 提供HTTPS订阅，`reliability.sh`/`backup.py` 管理安装事务、版本与备份，`help.sh` 提供使用说明。运行 `python3 scripts/build.py` 生成完整 `singbox-v2.sh`；`python3 scripts/build.py --check` 检查是否同步。不要直接修改生成文件。
+维护源码在 `src/`：`manager.sh` 为基础服务及安装逻辑，`subscriptions.sh` 为订阅导出，`users.sh` 为用户界面/服务，`users.py` 为配额与诊断，`operations.sh` 为更新/证书/资源，`menu.sh` 为主菜单及启动入口；`hopping.sh` 管理 UDP 跳跃，`media.sh`/`media.py` 检测流媒体，`warp.sh`/`warp.py` 管理 WARP 网关与托管路由，`relay.sh` 提供 sing-box 住宅落地中转界面，`haproxy.sh`/`haproxy.py` 提供独立 TCP 透传；`configuration.sh`/`configuration.py` 编辑节点，`acme.sh` 管理证书申请，`online.sh`/`online.py` 提供HTTPS订阅，`reliability.sh`/`backup.py` 管理安装事务、版本与备份，`help.sh` 提供使用说明。运行 `python3 scripts/build.py` 生成完整 `singbox-v2.sh`；`python3 scripts/build.py --check` 检查是否同步。不要直接修改生成文件。
 
 安装仍只需 `install.sh`，部署的脚本自带所有模块，不在运行时下载或加载额外文件。`bash singbox-v2.sh --self-check` 无需 root，可检查内嵌 Python 语法并输出版本。systemd/UFW 操作使用隔离模拟测试；实际 VPS 部署仍需验证。
 
@@ -253,7 +254,7 @@ HY2 支持上下行 Mbps、`ignore_client_bandwidth` 与 Salamander 混淆，服
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.2
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.7.0
 ```
 
 打包只包含安装入口、完整脚本、公开规则列表及SHA256SUMS，不发布运行时配置或凭据。
@@ -323,6 +324,28 @@ openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
 复用现有 sing-box 核心，不新增公网代理监听或独立中转守护进程。导入内容采用字段白名单，不覆盖未知自定义路由；明显指向本 VPS 托管监听端口的回环配置会被拒绝。落地凭据与公开信任证书私密保存在托管路由状态及备份中，更新、恢复和卸载沿用现有管理流程。使用同机域名别名、外部转发或多台 VPS 时，请自行确认没有转发循环。
 
 **速度取决于两段链路的时延、丢包和带宽，以及两台 VPS 的 CPU 与住宅线路上行能力。** 中转不能消除落地链路的瓶颈；请对比直连和中转的实际下载、上传及延迟。内置检查验证 TCP/HTTPS 可达，不证明住宅 IP 分类、流媒体解锁、UDP 公网可达或速度提升。两台 VPS 都可能产生流量费用。协议字段参考 [sing-box VLESS](https://sing-box.sagernet.org/configuration/outbound/vless/) 与 [sing-box Hysteria2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/)。
+
+## HAProxy TCP 透传（V2.7）
+
+入口 **4 → 11「HAProxy TCP 透传」**，本菜单 **12「使用说明」**。适用于 A 有较好的接入线路、B 使用 TCP 节点的中转场景，例如 **VLESS + Reality + Vision** 或已有 **Trojan**。A 可以只运行 HAProxy；此模式不要求 A 安装 sing-box 节点。
+
+```text
+手机 → A 的 HAProxy TCP 转发 → B 的节点 → 网站
+```
+
+1. **在 B 准备节点。** 本脚本可以安装 Reality/Vision；已有其他工具部署的 Trojan/TCP 节点也可使用。B 保持直连出口以保留住宅 IP，放行来自 A 的实际 TCP 节点端口。
+2. **在 A 添加转发。** 进入 **4 → 11 → 1**，填写名称、A 监听 IP 和转发端口、B 的 IP/域名和节点 TCP 端口。默认 A 为 `0.0.0.0:8443`、B 端口为 `443`；IPv6 监听可填 `::`，仅接收 IPv6。每个转发端口一条规则，最多 16 条，回车使用默认名称。
+3. **输入 `YES` 启用。** 检查端口占用、托管 TCP 节点预留端口、明显本机回环和 B 的 TCP 可达性，经 `haproxy -c` 校验后应用。失败保留原配置；服务重启失败恢复原配置与启停、自启状态。修改已有规则会短暂中断 HAProxy 转发连接。启用 UFW 时尝试放行新增 TCP 端口，云防火墙需手动放行。
+4. **修改手机里的 B 节点。** 复制 B 的节点，只把连接地址改成 **A 的公网 IP/域名**、连接端口改成 **A 的转发端口**。保留 B 的 UUID/密码、SNI、Reality 公钥与 Short ID、指纹和证书验证设置。A 不保存 B 的节点认证或私钥，也不需要 B 的公开 CA 文件；B 使用自签名 TLS 时，手机仍必须安全地信任 B 的证书。
+5. **连接与检查。** 小火箭连接修改后的节点，网站看到的出口应属于 B。节点认证、每人流量配额和有效期均在 **B** 管理；HAProxy 转发不经过 A 的 sing-box 账户服务，不能计入 A 的个人配额。
+
+这是 TCP 字节透传，不终止 TLS，不新增 `insecure` 或 PROXY 协议头。**不支持 HY2/QUIC/原生 UDP**；TCP 节点内封装的 UDP 取决于 B 和客户端支持。HY2 中转继续使用 **4 → 10** 的 sing-box 模式。TCP 可达性检测不验证节点认证、流媒体解锁或实际速度；请用客户端实测。域名落地会动态解析，DNS 别名不能指向 A 的任意转发入口，跨机器也应避免转发循环。目标必须是自己控制、具有节点认证的可信 B。
+
+独立服务为 `skybyte-haproxy.service`；文件在 `/etc/singbox-v2/haproxy/`，目录权限 700、状态与配置权限 600。从 Ubuntu/Debian 软件源按需安装 HAProxy，保留软件包现有配置；首次安装期间屏蔽默认服务自动启动，未启用的默认服务保持关闭。已运行的外部 HAProxy 不会被本模式停止或重配。转发进程使用发行版 `haproxy` 用户，服务设置权限与文件系统限制。
+
+本菜单提供状态、启停/自启、重启、TCP 测试和删除规则；**2 修改规则** 可更换落地或监听参数，保留其他规则。更换 B 后，手机认证与 SNI 等参数也需按新的 B 更新。**9 备份、10 恢复、11 卸载**：每次应用已有规则前也会自动备份到 `/etc/singbox-v2/haproxy-backups/`；恢复会校验并替换当前 TCP 规则，按备份状态启停服务。完整 sing-box 备份包含 `haproxy` 子目录，恢复 sing-box 后可从本菜单 10 单独恢复该子目录，避免自动覆盖当前转发规则。完整卸载会备份并移除托管 HAProxy 中转；也可独立卸载，保留软件包、外部 `/etc/haproxy/haproxy.cfg`、其他服务、备份及防火墙规则。未知文件、修改过的服务和软链接会导致拒绝操作。
+
+TCP 转发能力与配置校验参考 [HAProxy TCP 文档](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/protocol-support/tcp/) 和 [HAProxy 2.6 配置手册](https://docs.haproxy.org/2.6/configuration.html)。
 
 ## 常见问题
 

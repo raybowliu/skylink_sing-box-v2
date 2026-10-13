@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.6.2
+MANAGER_VERSION=2.7.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -24,6 +24,8 @@ BIN=/usr/local/bin/sing-box
 LOCK=/run/singbox-v2.lock
 WARP_REPO_FILE=/etc/apt/sources.list.d/skybyte-cloudflare-warp.list
 WARP_KEY_FILE=/usr/share/keyrings/skybyte-cloudflare-warp.gpg
+HAPROXY_BIN=/usr/sbin/haproxy
+HAPROXY_RUNTIME_DIR=/run/systemd/system
 
 # Language preference is independent of sing-box configuration.
 LANG_FILE="$BASE/language.conf"
@@ -72,7 +74,7 @@ startup_service_info(){
  printf '  %s: %s\n' "$label" "$value"
 }
 startup_info(){
- local os kernel arch virtual ipv4 ipv6 sb=false argo=false nginx=false users=false cert_info
+ local os kernel arch virtual ipv4 ipv6 sb=false argo=false nginx=false users=false hp=false cert_info
  # shellcheck disable=SC1090
  os=$( ( . "$OS_RELEASE"; printf '%s' "${PRETTY_NAME:-${ID:-}}" ) 2>/dev/null) || os=''
  os=${os:-$(L '未知' 'Unknown')}
@@ -91,13 +93,15 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：住宅落地 / VPS 中转（4 → 10）、在线订阅、ACME 与备份加密' 'Features: residential landing / VPS relay (4 → 10), HTTPS subscriptions, ACME and encrypted backups'
+ say '功能更新：HAProxy TCP 透传（4 → 11）、住宅落地中转、在线订阅、ACME 与备份加密' 'Features: HAProxy TCP passthrough (4 → 11), residential relay, HTTPS subscriptions, ACME and encrypted backups'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
  startup_service_info sing-box "$sb" sing-box.service
  startup_service_info Argo "$argo" skybyte-argo-tunnel.service
  startup_service_info Nginx "$nginx" nginx.service
+ [[ ! -d $BASE/haproxy ]] || hp=true
+ startup_service_info 'HAProxy TCP' "$hp" skybyte-haproxy.service
  [[ ! -f $BASE/users.json ]] || users=true
  startup_service_info "$(L '用户配额服务' 'User quota supervisor')" "$users" skybyte-users.service
  say 'IP 为本机网卡地址，可能与公网出口不同。' 'IPs are local interface addresses; they may differ from public egress.'
@@ -139,7 +143,7 @@ check_owned(){ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本�
 backup(){
  check_owned || return 1
  local path file
- users_guard && warp_guard && acme_guard && online_guard || return 1
+ users_guard && warp_guard && acme_guard && online_guard && haproxy_guard || return 1
  path="$BACKUP/$(date +%Y%m%d-%H%M%S)-$RANDOM"
  mkdir -m 700 "$path" || return 1; cp -a "$(dirname "$CONF")" "$path/config" || return 1
  cp "$META" "$path/state.json" || return 1
@@ -180,6 +184,7 @@ PY_SUB_BACKUP
   if [[ -f $SYSTEMD_DIR/skybyte-subscriptions.service ]];then cp "$SYSTEMD_DIR/skybyte-subscriptions.service" "$path/subscriptions.unit" || return 1;fi
   if systemctl is-active --quiet skybyte-subscriptions.service;then echo true > "$path/subscriptions.active";else echo false > "$path/subscriptions.active";fi
  fi
+ if [[ -d $BASE/haproxy ]];then haproxy_engine backup "$path/haproxy" >/dev/null || return 1;fi
  backup_engine manifest "$path" || return 1
  chmod -R go-rwx "$path" || return 1; printf '%s\n' "$path"
 }
@@ -302,6 +307,7 @@ install_protocol() (
  if [[ -e $CONF || -L $CONF || -e $META || -L $META || -e $BIN || -L $BIN || -e $SYSTEMD_DIR/sing-box.service || -L $SYSTEMD_DIR/sing-box.service ]] || command -v sing-box >/dev/null; then err "$(L '发现已有配置，拒绝覆盖' 'Existing configuration or binary found; refusing to overwrite')"; return 1; fi
  if systemctl list-unit-files sing-box.service --no-legend 2>/dev/null | grep -q sing-box; then err "$(L '已有 sing-box 服务，拒绝覆盖' 'Existing sing-box service found; refusing to overwrite')"; return 1; fi
  require_cmd ss || { apt-get update && apt-get install -y iproute2 || return 1; }
+ if [[ $mode != 2 ]];then haproxy_engine check_port 443 || return 1;fi
  if [[ $mode != 2 ]] && ss -H -ltn '( sport = :443 )' | grep -q .; then err "$(L 'TCP 443 已被占用' 'TCP 443 is occupied')"; return 1; fi
  if [[ $mode != 1 ]] && ss -H -lun '( sport = :443 )' | grep -q .; then err "$(L 'UDP 443 已被占用' 'UDP 443 is occupied')"; return 1; fi
  local domain="" cert="" key="" sni="" node_name
@@ -845,6 +851,7 @@ restore(){
  argo_guard || return 1
  users_guard || return 1
  backup_engine preflight "$path" || return 1
+ haproxy_engine check_configs "$path" || return 1
  snap=$(backup) || return 1
  users_stop || return 1
  cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
@@ -1245,6 +1252,13 @@ with lock():
   uid=secrets.token_hex(8);p=userdir(uid);p.mkdir(mode=0o700)
   try:
    used={u[k] for u in d['users'] for k in ['port','api_port']}
+   relay_file=base/'haproxy/state.json'
+   if relay_file.exists() or relay_file.is_symlink():
+    require(not relay_file.is_symlink() and not relay_file.parent.is_symlink() and relay_file.stat().st_size<=131072)
+    relay=json.loads(relay_file.read_text());require(relay.get('owner')=='SKYBYTE HAProxy TCP v1' and relay.get('schema')==1)
+    require(isinstance(relay.get('rules'),list) and len(relay['rules'])<=16)
+    for rule in relay['rules']:
+     require(type(rule.get('port'))==int and 1<=rule['port']<=65535);used.add(rule['port'])
    if metadata.get('hop'):used.update(range(int(metadata['hop_start']),int(metadata['hop_end'])+1))
    port=available_port(used);controller=available_port(used,True)
    identity=str(uuid.uuid4());password=secrets.token_urlsafe(32);token=secrets.token_urlsafe(32)
@@ -1704,6 +1718,7 @@ argo_install(){
  confirm "$(L '安装所选 Argo 模式？' 'Install selected Argo mode?')" || return 0
  prompt_read "$(L '本机 WS 端口 [8080]：' 'Local WS port [8080]: ')" port || return 1
  port=${port:-8080}; valid_port "$port" && (( 10#$port>=1024 )) || return 1; port=$((10#$port))
+ haproxy_engine check_port "$port" || return 1
  if ss -H -ltn "( sport = :$port )" | grep -q .; then err "$(L '端口已占用' 'Port is occupied')"; return 1; fi
  name=$(choose_node_name) || return 1
  if [[ $mode == named ]]; then
@@ -1868,7 +1883,7 @@ argo_manager(){
 }
 
 uninstall_manager(){
- certificate_guard && warp_guard && hop_guard && acme_guard && online_guard || return 1
+ certificate_guard && warp_guard && hop_guard && acme_guard && online_guard && haproxy_guard || return 1
  users_guard || return 1
  need_root
  check_owned || return 1
@@ -1913,6 +1928,7 @@ PY
  users_stop || return 1
  if [[ -f $BASE/users.json ]]; then users_engine ledger "$snap" && backup_engine reseal "$snap" || return 1; fi
  online_remove || return 1
+ haproxy_engine purge >/dev/null || return 1
  acme_remove || return 1
  users_remove || return 1
  warp_remove || return 1
@@ -2859,6 +2875,7 @@ warp_install_client(){
  confirm "$(L '安装官方客户端并注册、接受 WARP 服务条款？' 'Install/register the official client and accept WARP terms?')" || return 0
  prompt_read "$(L '本机代理端口 [40000]：' 'Local proxy port [40000]: ')" port || return 0; port=${port:-40000}
  valid_port "$port" && ((10#$port>=1024)) || return 1; port=$((10#$port))
+ haproxy_engine check_port "$port" || return 1
  if ss -H -ltn "( sport = :$port )" | grep -q .; then err "$(L '端口已被占用' 'Port already occupied')"; return 1; fi
  apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl ca-certificates gnupg || return 1
  tmp=$(mktemp -d "$BASE/warp-install.XXXXXX") || return 1
@@ -2890,6 +2907,7 @@ warp_import_gateway(){
  [[ -f $profile && ! -L $profile ]] || return 1
  prompt_read "$(L '共享本机代理端口 [40000]：' 'Shared local proxy port [40000]: ')" port || return 0; port=${port:-40000}
  valid_port "$port" && ((10#$port>=1024)) || return 1; port=$((10#$port))
+ haproxy_engine check_port "$port" || return 1
  confirm "$(L '导入私密配置并建立共享 WARP 网关？已有网关会短暂重启。' 'Import private profile and create shared WARP gateway? Existing gateway briefly restarts.')" || return 0
  saved=$(mktemp -d "$BASE/warp-import.XXXXXX") || return 1
  if [[ -f $BASE/warp-gateway.json ]]; then cp "$BASE/warp-gateway.json" "$saved/gateway.json" || return 1; fi
@@ -3219,6 +3237,543 @@ relay_menu() (
  esac
  rm -rf "$stage";return "$rc"
 )
+haproxy_engine(){
+ local output rc=0
+ output=$(python3 - "$BASE" "$SYSTEMD_DIR" "$HAPROXY_BIN" "$CONF" "$@" 2>&1 <<'PY_HAPROXY'
+"""Owned HAProxy TCP passthrough; never terminate TLS or import node credentials."""
+import contextlib
+import fcntl
+import ipaddress
+import json
+import os
+from pathlib import Path
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import unicodedata
+import uuid
+
+OWNER = 'SKYBYTE HAProxy TCP v1'
+UNIT = 'skybyte-haproxy.service'
+
+
+def port(value):
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise ValueError('Port must be 1-65535 / 端口必须为 1-65535')
+    return value
+
+
+def host(value, listen=False):
+    if not isinstance(value, str) or not value or len(value) > 253:
+        raise ValueError('Invalid address / 地址无效')
+    try:
+        ip = ipaddress.ip_address(value)
+        if ip.is_multicast or ip.is_link_local or (not listen and ip.is_unspecified):
+            raise ValueError('Invalid peer address / 落地地址无效')
+        return str(ip)
+    except ValueError:
+        if listen or not re.fullmatch(r'(?=.{1,253}$)[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?', value):
+            raise ValueError('Use an IP or DNS hostname / 请填写 IP 或域名') from None
+        if any(not re.fullmatch(r'[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?', label) for label in value.split('.')):
+            raise ValueError('Invalid DNS hostname / 域名无效')
+        # Numeric-looking invalid IPs must not become DNS names.
+        if re.fullmatch(r'[0-9.]+', value):
+            raise ValueError('Invalid IP address / IP 地址无效')
+        return value.lower()
+
+
+def normalize(state):
+    if not isinstance(state, dict) or set(state) != {'owner', 'schema', 'rules'} or state['owner'] != OWNER or type(state['schema']) is not int or state['schema'] != 1:
+        raise ValueError('HAProxy ownership mismatch / HAProxy 归属异常')
+    if not isinstance(state['rules'], list) or not 1 <= len(state['rules']) <= 16:
+        raise ValueError('Use 1-16 TCP rules / 支持 1-16 条 TCP 转发规则')
+    result = {'owner': OWNER, 'schema': 1, 'rules': []}
+    ids, ports = set(), set()
+    for rule in state['rules']:
+        if not isinstance(rule, dict) or set(rule) != {'id', 'name', 'listen', 'port', 'peer', 'peer_port'}:
+            raise ValueError('Unknown rule fields / 存在未知规则字段')
+        rid, name = rule['id'], rule['name']
+        if not isinstance(rid, str) or not re.fullmatch(r'[a-f0-9]{12}', rid) or rid in ids:
+            raise ValueError('Invalid rule ID / 规则 ID 无效')
+        if not isinstance(name, str) or not name.strip() or len(name) > 64 or any(unicodedata.category(c).startswith('C') for c in name):
+            raise ValueError('Name requires 1-64 characters without controls / 名称为 1-64 字且不能含控制字符')
+        lp = port(rule['port'])
+        if lp in ports:
+            raise ValueError('Duplicate entry port / 中转端口重复')
+        ids.add(rid); ports.add(lp)
+        result['rules'].append(dict(id=rid, name=name.strip(), listen=host(rule['listen'], True), port=lp, peer=host(rule['peer']), peer_port=port(rule['peer_port'])))
+    return result
+
+
+def endpoint(address, number):
+    return ('[' + address + ']' if ':' in address else address) + ':' + str(number)
+
+
+def render(state):
+    state = normalize(state)
+    lines = ['# ' + OWNER, 'global', '    maxconn 1024', '    user haproxy', '    group haproxy',
+             '    log stdout format raw local0', 'defaults', '    mode tcp', '    log global',
+             '    option tcplog', '    timeout connect 5s', '    timeout client 1h',
+             '    timeout server 1h', '    timeout check 3s']
+    if any(not is_ip(r['peer']) for r in state['rules']):
+        lines += ['resolvers skybyte_dns', '    parse-resolv-conf', '    timeout resolve 2s',
+                  '    timeout retry 1s', '    hold valid 10s']
+    for r in state['rules']:
+        dns = '' if is_ip(r['peer']) else ' resolvers skybyte_dns init-addr last,libc,none'
+        lines += ['listen skybyte_' + r['id'], '    bind ' + endpoint(r['listen'], r['port']) + (' v6only' if ':' in r['listen'] else ''),
+                  '    server landing ' + endpoint(r['peer'], r['peer_port']) + ' check inter 5s fall 3 rise 2' + dns]
+    return '\n'.join(lines) + '\n'
+
+
+def is_ip(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
+
+
+def tcp_ports(cfg):
+    result = set()
+    for inbound in cfg.get('inbounds', []):
+        if inbound.get('type') != 'hysteria2' and inbound.get('listen_port'):
+            result.add(port(inbound['listen_port']))
+    api = cfg.get('experimental', {}).get('clash_api', {}).get('external_controller', '')
+    if api:
+        match = re.search(r':([0-9]{1,5})$', api)
+        if not match: raise ValueError('Invalid controller address')
+        result.add(port(int(match[1])))
+    return result
+
+
+class Relay:
+    def __init__(self, base, units, binary, conf):
+        self.base, self.units, self.binary, self.conf = Path(base), Path(units), str(binary), Path(conf)
+        self.root = self.base / 'haproxy'
+        self.unit = self.units / UNIT
+        self.backups = self.base / 'haproxy-backups'
+        for value in (str(self.base), str(self.units), self.binary):
+            if not value.startswith('/') or not re.fullmatch(r'[a-zA-Z0-9_./-]+', value):
+                raise ValueError('Unsafe runtime path')
+
+    def unit_text(self):
+        cfg = str(self.root / 'haproxy.cfg')
+        return ('[Unit]\nDescription=SKYBYTE managed HAProxy TCP passthrough\nAfter=network-online.target\nWants=network-online.target\n'
+                '[Service]\nType=simple\nExecStart=' + self.binary + ' -W -db -f ' + cfg + '\n'
+                'Restart=on-failure\nRestartSec=3\nUMask=0077\nNoNewPrivileges=yes\n'
+                'CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_SETUID CAP_SETGID\n'
+                'ProtectSystem=strict\nProtectHome=yes\nPrivateTmp=yes\nLimitNOFILE=8192\n'
+                '[Install]\nWantedBy=multi-user.target\n')
+
+    def read(self, path):
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > 131072:
+            raise ValueError('Unsafe HAProxy file / HAProxy 文件异常')
+        return path.read_bytes()
+
+    def guard(self):
+        if self.base.is_symlink() or self.units.is_symlink() or self.root.is_symlink() or self.backups.is_symlink():
+            raise ValueError('HAProxy path is a symlink / HAProxy 路径不能为软链接')
+        overrides = self.units / (UNIT + '.d')
+        if overrides.exists() or overrides.is_symlink():
+            raise ValueError('Custom HAProxy service overrides / HAProxy 存在自定义服务覆盖')
+        if not self.root.exists():
+            if self.unit.exists() or self.unit.is_symlink():
+                raise ValueError('Unmanaged HAProxy unit / 存在非托管 HAProxy 服务')
+            return None
+        if not self.root.is_dir() or {p.name for p in self.root.iterdir()} != {'state.json', 'haproxy.cfg'}:
+            raise ValueError('Unknown HAProxy files; refusing overwrite / 存在未知 HAProxy 文件，拒绝覆盖')
+        state = normalize(json.loads(self.read(self.root / 'state.json')))
+        if self.read(self.root / 'haproxy.cfg').decode() != render(state) or self.read(self.unit).decode() != self.unit_text():
+            raise ValueError('HAProxy config/unit changed; refusing overwrite / HAProxy 配置或服务已修改，拒绝覆盖')
+        source = self.ctl('show', '--property=FragmentPath', '--property=DropInPaths', UNIT, check=False)
+        if source.returncode == 0:
+            properties = dict(line.split('=', 1) for line in source.stdout.splitlines() if '=' in line)
+            if properties.get('DropInPaths') or properties.get('FragmentPath', str(self.unit)) != str(self.unit):
+                raise ValueError('External HAProxy service override / HAProxy 服务被外部配置覆盖')
+        return state
+
+    def ctl(self, *args, check=True):
+        return subprocess.run(['systemctl', *args], check=check, capture_output=True, text=True, timeout=30)
+
+    def flags(self):
+        return (self.ctl('is-active', '--quiet', UNIT, check=False).returncode == 0,
+                self.ctl('is-enabled', '--quiet', UNIT, check=False).returncode == 0)
+
+    def write(self, path, data, mode=0o600):
+        if path.is_symlink():
+            raise ValueError('Refusing symlink write')
+        fd, tmp = tempfile.mkstemp(dir=path.parent)
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(data); f.flush(); os.fsync(f.fileno())
+            os.chmod(tmp, mode); os.replace(tmp, path)
+        finally:
+            if os.path.exists(tmp): os.unlink(tmp)
+
+    def reserved(self):
+        paths = [self.conf, self.base / 'argo-server.json', self.base / 'warp-gateway.json']
+        users = self.base / 'users'
+        if users.exists() and not users.is_symlink():
+            paths += list(users.glob('*/server.json'))
+        ports = set()
+        for path in paths:
+            if path.exists():
+                if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 4 * 1024**2:
+                    raise ValueError('Unsafe managed node config')
+                ports.update(tcp_ports(json.loads(path.read_text())))
+        for path in (self.base / 'subscriptions.json', self.base / 'warp-client.json'):
+            if path.exists(): ports.add(port(json.loads(self.read(path))['port']))
+        return ports
+
+    def preflight(self, state, old=None, active=False, probe=True):
+        reserved = self.reserved()
+        old_binds = {(r['listen'], r['port']) for r in (old or {'rules': []})['rules']} if active else set()
+        local = {'127.0.0.1', '::1'}
+        try:
+            result = subprocess.run(['ip', '-j', 'addr'], check=True, capture_output=True, text=True, timeout=5)
+            local.update(a['local'] for row in json.loads(result.stdout) for a in row.get('addr_info', []))
+        except (OSError, ValueError, subprocess.SubprocessError):
+            try: local.update(a[4][0] for a in socket.getaddrinfo(socket.gethostname(), None, type=socket.SOCK_STREAM))
+            except socket.gaierror: pass
+        local.update(r['listen'] for r in state['rules'] if r['listen'] not in ('0.0.0.0', '::'))
+        entry_ports = {r['port'] for r in state['rules']}
+        for r in state['rules']:
+            if r['port'] in reserved:
+                raise ValueError('Port reserved by a managed TCP node / 端口已被托管 TCP 节点预留')
+            if (r['listen'], r['port']) not in old_binds:
+                with socket.socket(socket.AF_INET6 if ':' in r['listen'] else socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    if ':' in r['listen']: sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+                    sock.bind((r['listen'], r['port']))
+            addresses = {a[4][0] for a in socket.getaddrinfo(r['peer'], r['peer_port'], type=socket.SOCK_STREAM)}
+            if r['peer_port'] in entry_ports and (addresses & local or any(ipaddress.ip_address(a).is_loopback or getattr(ipaddress.ip_address(a), 'ipv4_mapped', None) in {ipaddress.ip_address(x) for x in local if is_ip(x)} for a in addresses)):
+                raise ValueError('TCP forwarding loop / TCP 转发回环')
+            if probe:
+                with socket.create_connection((r['peer'], r['peer_port']), timeout=5): pass
+
+    def validate(self, state):
+        with tempfile.TemporaryDirectory(prefix='haproxy-check-', dir=self.base) as tmp:
+            cfg = Path(tmp) / 'haproxy.cfg'; cfg.write_text(render(state)); cfg.chmod(0o600)
+            result = subprocess.run([self.binary, '-c', '-q', '-f', str(cfg)], capture_output=True, text=True, timeout=20)
+            if result.returncode:
+                raise ValueError('HAProxy validation failed / HAProxy 配置检查失败: ' + result.stderr[:2000])
+
+    def snapshot(self, destination=None):
+        state = self.guard()
+        if state is None: raise ValueError('No HAProxy rules / 尚无 HAProxy 规则')
+        if destination is None:
+            self.backups.mkdir(mode=0o700, exist_ok=True)
+            destination = self.backups / (time.strftime('%Y%m%d-%H%M%S') + '-' + uuid.uuid4().hex[:8])
+        destination = Path(destination)
+        if not (destination.parent == self.backups or destination.name == 'haproxy' and destination.parent.parent == self.base / 'backups'):
+            raise ValueError('Backup must stay in managed directories')
+        if destination.exists() or destination.is_symlink() or destination.parent.is_symlink():
+            raise ValueError('Backup destination exists or is unsafe')
+        destination.mkdir(mode=0o700)
+        active, enabled = self.flags()
+        for name in ('state.json', 'haproxy.cfg'):
+            self.write(destination / name, self.read(self.root / name))
+        self.write(destination / 'snapshot.json', json.dumps(dict(owner=OWNER, schema=1, active=active, enabled=enabled)).encode())
+        return destination
+
+    def health(self):
+        for _ in range(5):
+            time.sleep(.2)
+            if self.ctl('is-active', '--quiet', UNIT, check=False).returncode:
+                raise ValueError('HAProxy service did not stay active / HAProxy 服务启动失败')
+
+    def apply(self, state, active=True, enabled=True, probe=True):
+        state = normalize(state); old = self.guard()
+        if old is None:
+            source = self.ctl('show', '--property=FragmentPath', '--value', UNIT, check=False).stdout.strip()
+            if source or any(self.flags()):
+                raise ValueError('Existing external HAProxy relay unit / 已有外部 HAProxy 中转服务')
+        old_active, old_enabled = self.flags() if old else (False, False)
+        self.preflight(state, old, old_active, probe); self.validate(state)
+        snapshot = self.snapshot() if old else None
+        files = [self.root / 'state.json', self.root / 'haproxy.cfg', self.unit]
+        previous = {p: self.read(p) for p in files} if old else {}
+        try:
+            self.root.mkdir(mode=0o700, exist_ok=True)
+            self.write(files[0], json.dumps(state, indent=2).encode())
+            self.write(files[1], render(state).encode())
+            self.write(self.unit, self.unit_text().encode(), 0o644)
+            self.ctl('daemon-reload')
+            self.ctl('enable' if enabled else 'disable', UNIT)
+            self.ctl('restart' if active else 'stop', UNIT)
+            if active: self.health()
+        except Exception as error:
+            self.ctl('stop', UNIT, check=False)
+            for path in files:
+                if path in previous: self.write(path, previous[path], 0o644 if path == self.unit else 0o600)
+                elif path.exists(): path.unlink()
+            if not old and self.root.exists(): self.root.rmdir()
+            self.ctl('daemon-reload')
+            self.ctl('enable' if old_enabled else 'disable', UNIT, check=False)
+            if old_active:
+                self.ctl('restart', UNIT); self.health()
+            raise ValueError('Apply failed; previous HAProxy state restored / 应用失败，已恢复原 HAProxy 状态') from error
+        return snapshot
+
+    def restore(self, value):
+        path = Path(value)
+        own = path.parent == self.backups
+        full = path.name == 'haproxy' and path.parent.parent == self.base / 'backups'
+        if full and (self.base / 'backups').is_symlink():
+            raise ValueError('Full backup path is a symlink')
+        if not (own or full) or path.is_symlink() or path.parent.is_symlink() or not path.is_dir() or {p.name for p in path.iterdir()} != {'state.json', 'haproxy.cfg', 'snapshot.json'}:
+            raise ValueError('Not a managed HAProxy snapshot / 非托管 HAProxy 备份')
+        state = normalize(json.loads(self.read(path / 'state.json')))
+        if self.read(path / 'haproxy.cfg').decode() != render(state): raise ValueError('Backup config mismatch')
+        flags = json.loads(self.read(path / 'snapshot.json'))
+        if set(flags) != {'owner', 'schema', 'active', 'enabled'} or flags['owner'] != OWNER or type(flags['schema']) is not int or flags['schema'] != 1 or type(flags['active']) is not bool or type(flags['enabled']) is not bool:
+            raise ValueError('Invalid snapshot metadata')
+        return self.apply(state, flags['active'], flags['enabled'], probe=flags['active'])
+
+    def purge(self):
+        if self.guard() is None: return None
+        snapshot = self.snapshot()
+        self.ctl('disable', '--now', UNIT)
+        self.unit.unlink()
+        for name in ('state.json', 'haproxy.cfg'): (self.root / name).unlink()
+        self.root.rmdir(); self.ctl('daemon-reload')
+        return snapshot
+
+    @contextlib.contextmanager
+    def lock(self):
+        path = self.base / 'haproxy.lock'
+        fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, 'w') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            yield
+
+    def run(self, action, args):
+        state = self.guard()
+        if action == 'guard': return
+        if action == 'purge' and state is None: return
+        if action == 'check_id':
+            if not state or args[0] not in {r['id'] for r in state['rules']}:
+                raise ValueError('Unknown rule ID / 无此规则 ID')
+            return
+        if action in ('check_port', 'check_configs'):
+            if state is None: return
+            reserved = {r['port'] for r in state['rules']}
+            if action == 'check_port': wanted = {port(int(args[0]))}
+            else:
+                directory = Path(args[0])
+                if directory.is_symlink() or not directory.is_dir(): raise ValueError('Invalid candidate directory')
+                paths = list(directory.glob('[0-9]*-config.json'))
+                paths += [p for p in (directory / 'config/config.json', directory / 'argo-server.json', directory / 'warp-gateway.json') if p.exists()]
+                paths += list((directory / 'users').glob('*/server.json'))
+                wanted = set()
+                for path in paths:
+                    if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 4 * 1024**2: raise ValueError('Unsafe candidate config')
+                    wanted.update(tcp_ports(json.loads(path.read_text())))
+                subscription = directory / 'subscriptions.json'
+                if subscription.exists() and not (self.base / 'subscriptions.json').exists():
+                    wanted.add(port(json.loads(self.read(subscription))['port']))
+            if wanted & reserved: raise ValueError('TCP port reserved by HAProxy / TCP 端口已被 HAProxy 预留')
+            return
+        if action == 'list':
+            for r in (state or {'rules': []})['rules']:
+                print(r['id'] + ' | ' + r['name'] + ' | ' + endpoint(r['listen'], r['port']) + ' → ' + endpoint(r['peer'], r['peer_port']))
+            return
+        if action == 'probe':
+            if not state: raise ValueError('No HAProxy rules')
+            for r in state['rules']:
+                with socket.create_connection((r['peer'], r['peer_port']), timeout=5): pass
+                print(r['name'] + ': TCP reachable / TCP 可达（尚未验证节点认证）')
+            return
+        with self.lock():
+            state = self.guard()
+            if action in ('add', 'edit'):
+                if action == 'edit':
+                    rid, *args = args
+                    if not state or rid not in {r['id'] for r in state['rules']}: raise ValueError('Unknown rule ID')
+                else: rid = uuid.uuid4().hex[:12]
+                name, listen, lp, peer, pp = args
+                state = state or dict(owner=OWNER, schema=1, rules=[])
+                rule = dict(id=rid, name=name or 'SKYBYTE-TCP', listen=listen or '0.0.0.0', port=int(lp), peer=peer, peer_port=int(pp))
+                if action == 'edit': state['rules'] = [rule if r['id'] == rid else r for r in state['rules']]
+                else: state['rules'].append(rule)
+                saved = self.apply(state)
+            elif action == 'remove':
+                if not state or args[0] not in {r['id'] for r in state['rules']}: raise ValueError('Unknown rule ID')
+                state['rules'] = [r for r in state['rules'] if r['id'] != args[0]]
+                saved = self.apply(state, probe=False) if state['rules'] else self.purge()
+            elif action in ('start', 'restart'):
+                if not state: raise ValueError('No HAProxy rules')
+                saved = self.apply(state)
+            elif action == 'stop':
+                if state: self.ctl('disable', '--now', UNIT)
+                saved = None
+            elif action == 'backup': saved = self.snapshot(args[0] if args else None)
+            elif action == 'restore': saved = self.restore(args[0])
+            elif action == 'purge': saved = self.purge()
+            else: raise ValueError('Unknown HAProxy action')
+            if saved: print('Backup / 备份: ' + str(saved))
+
+
+if __name__ == '__main__':
+    try:
+        base, units, binary, conf, action, *args = sys.argv[1:]
+        Relay(base, units, binary, conf).run(action, args)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as error:
+        print('HAProxy: ' + str(error), file=sys.stderr)
+        sys.exit(1)
+PY_HAPROXY
+ ) || rc=$?
+ if ((rc));then err "$output";return "$rc";fi
+ [[ -z $output ]] || printf '%s%s%s\n' "$YELLOW" "$output" "$RESET"
+ return 0
+}
+haproxy_guard(){ haproxy_engine guard; }
+haproxy_install_binary() (
+ [[ ! -L $HAPROXY_BIN ]] || return 1
+ [[ ! -x $HAPROXY_BIN ]] || return 0
+ require_cmd apt-get && require_cmd systemctl || return 1
+ if systemctl is-active --quiet haproxy.service;then
+  err "$(L '已有运行中的非托管 HAProxy，请先修复其二进制路径' 'An external HAProxy service is active; repair its binary path first')";return 1
+ fi
+ local mask=$HAPROXY_RUNTIME_DIR/haproxy.service created=false enabled=false completed=false
+ if systemctl is-enabled --quiet haproxy.service;then enabled=true;fi
+ trap haproxy_install_cleanup EXIT
+ mkdir -p "$HAPROXY_RUNTIME_DIR" || return 1
+ if [[ ! -e $mask && ! -L $mask ]];then
+  ln -s /dev/null "$mask" || return 1;created=true
+  systemctl daemon-reload || return 1
+ fi
+ apt-get update && DEBIAN_FRONTEND=noninteractive apt-get -o Dpkg::Options::=--force-confold install -y --no-install-recommends haproxy || return 1
+ [[ -x $HAPROXY_BIN ]] || return 1
+ # A newly installed package must not start its default listener at the next boot.
+ if [[ $enabled == false ]];then systemctl disable haproxy.service || return 1;fi
+ completed=true
+)
+haproxy_install_cleanup(){
+ if [[ ${completed:-false} == false && ${enabled:-false} == false ]];then
+  systemctl disable haproxy.service >/dev/null 2>&1 || :
+ fi
+ if [[ ${created:-false} == true && -L ${mask:-} && $(readlink "$mask") == /dev/null ]];then
+  rm -f -- "$mask";systemctl daemon-reload >/dev/null 2>&1 || :
+ fi
+}
+haproxy_add(){
+ local name listen port peer peer_port id=${1:-}
+ prompt_read "$(L '规则名称 [SKYBYTE-TCP]：' 'Rule name [SKYBYTE-TCP]: ')" name || return 0
+ prompt_read "$(L 'A 监听地址 [0.0.0.0]（IPv6 可填 ::）：' 'A listen IP [0.0.0.0] (IPv6: ::): ')" listen || return 0
+ prompt_read "$(L 'A 转发 TCP 端口 [8443]：' 'A forwarding TCP port [8443]: ')" port || return 0;port=${port:-8443}
+ prompt_read "$(L 'B 落地 IP / 域名（只填地址）：' 'B landing IP / hostname (address only): ')" peer || return 0
+ prompt_read "$(L 'B 节点 TCP 端口 [443]：' 'B node TCP port [443]: ')" peer_port || return 0;peer_port=${peer_port:-443}
+ valid_port "$port" && valid_port "$peer_port" || return 1
+ [[ $peer =~ ^[a-zA-Z0-9:.-]+$ && ${#peer} -le 253 ]] || { err "$(L 'B 只填写 IP 或域名，请勿粘贴节点链接' 'Enter only B IP/hostname; do not paste a node URI')";return 1; }
+ warn "$(L '添加或修改 TCP 转发会启用独立 HAProxy 服务，已有 TCP 转发连接可能短暂中断。B 的协议必须使用 TCP；HY2 不支持此模式。' 'Adding or editing TCP forwarding enables a separate HAProxy service; existing forwarded connections may briefly disconnect. B must use TCP; HY2 is unsupported in this mode.')"
+ confirm "$(L '检查 B 的 TCP 可达性并启用转发？' 'Check B TCP reachability and enable forwarding?')" || return 0
+ haproxy_install_binary || return 1
+ if [[ -n $id ]];then haproxy_engine edit "$id" "$name" "$listen" "$port" "$peer" "$peer_port" || return 1
+ else haproxy_engine add "$name" "$listen" "$port" "$peer" "$peer_port" || return 1;fi
+ if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active';then
+  if ! ufw allow "$port/tcp";then warn "$(L 'HAProxy 已启用，但 UFW 放行失败；请人工检查防火墙。' 'HAProxy is enabled, but UFW access failed; check firewall rules manually.')";fi
+ fi
+ printf '%s' "$YELLOW"
+ say "A 转发端口：TCP ${port}；B 节点端口：TCP ${peer_port}。请在云防火墙放行 A 的入口及 A → B 的 TCP 连接。" "A entry: TCP $port; B node: TCP $peer_port. Allow A ingress and A → B TCP access in provider firewalls."
+ say '手机复制 B 的节点，仅把连接地址与端口改为 A 的公网地址和转发端口；保留 B 的认证、SNI、Reality 公钥及证书验证。' "On your phone, copy B's node and change only the connection address/port to A's public address/forwarding port. Retain B's authentication, SNI, Reality public key and certificate verification."
+ printf '%s' "$RESET"
+}
+haproxy_help(){
+ printf '%s' "$YELLOW"
+ if [[ ${LANGUAGE_CHOICE:-zh_CN} == en_US ]];then cat <<'HAPROXY_HELP_EN'
+HAProxy TCP passthrough — usage guide
+
+A: entry server with a good client-facing route. B: residential exit server.
+Path: phone → A HAProxy TCP forwarder → B node → website.
+
+1. On B, prepare a working TCP node, such as VLESS + Reality + Vision or Trojan.
+   Keep B's egress direct to retain its residential IP. Allow B's actual TCP node port from A.
+2. On A, open 4 → 11 HAProxy TCP passthrough, then 1 Add TCP rule.
+   A does not need a sing-box node for this mode.
+3. Enter a rule name, A's listen IP and TCP port, then B's IP/hostname and node TCP port.
+   Defaults: A listens on 0.0.0.0:8443, B uses port 443. IPv6 listen :: is IPv6-only.
+   Use an unused port on A. Type YES to validate and enable forwarding.
+4. On your phone, copy B's node. Change only its connection address to A's public IP/hostname
+   and its connection port to A's forwarding port. Keep B's password/UUID, SNI, Reality keys,
+   fingerprint and certificate verification settings. A does not need B's private key.
+5. Connect with the edited node in Shadowrocket. Websites should see B's actual exit IP.
+   B handles node authentication, per-user usage, quotas and expiry. Manage users on B.
+
+This mode passes TCP bytes without terminating TLS. A does not require B's public CA file;
+the phone must still securely trust B's certificate if B uses self-signed TLS.
+It does not forward HY2/QUIC/raw UDP. Protocol-carried UDP inside a TCP node depends on B/client support.
+TCP reachability checks do not verify node authentication, streaming access or speed improvements.
+Open A's forwarding TCP port in UFW/provider rules; B must allow A's TCP connections.
+DNS targets are re-resolved; keep aliases from pointing back to any entry rule to avoid loops.
+Standalone backups are under /etc/singbox-v2/haproxy-backups. Full manager backups also include
+a haproxy subdirectory; restore that separately through this menu (10) after restoring sing-box.
+Only the owned skybyte-haproxy.service and /etc/singbox-v2/haproxy files are managed.
+Use menu 2 to edit a rule by ID. If B changes, update B's credentials/SNI on the phone as needed.
+Existing /etc/haproxy/haproxy.cfg, external services and firewall rules are preserved.
+The forwarding endpoint must be protected by B's authenticated node; use your own trusted B.
+HAPROXY_HELP_EN
+ else cat <<'HAPROXY_HELP_ZH'
+HAProxy TCP 透传 — 使用说明
+
+A：线路较好的中转服务器。B：住宅 IP 落地服务器。
+路径：手机 → A 的 HAProxy TCP 转发 → B 的节点 → 网站。
+
+1. 打开 B 的终端，准备可用的 TCP 节点，例如 VLESS + Reality + Vision 或 Trojan。
+   B 出站保持直连以保留住宅 IP，放行 A 到 B 的实际 TCP 节点端口。
+2. 切换到 A 的终端，进入 4 → 11「HAProxy TCP 透传」，选择 1「添加 TCP 规则」。
+   这种模式下，A 可以不安装 sing-box 节点。
+3. 填写规则名称、A 监听地址与转发端口，再填写 B 的 IP / 域名和节点 TCP 端口。
+   默认 A 监听 0.0.0.0:8443，B 端口为 443；IPv6 监听可填 ::，仅接收 IPv6。
+   A 的端口必须未被占用。输入 YES，检查后启用转发。
+4. 在手机上复制 B 的节点，只把连接地址改为 A 的公网 IP / 域名，端口改为 A 的转发端口。
+   保留 B 的密码 / UUID、SNI、Reality 公钥、指纹及证书验证设置。A 不需要 B 的私钥。
+5. 小火箭连接修改后的节点，网站看到的出口应为 B。
+   节点认证、每人用量、配额和有效期都由 B 管理，请在 B 上添加用户。
+
+此模式原样转发 TCP 数据，不终止 TLS。A 不需要复制 B 的公开 CA 文件；
+如果 B 使用自签名 TLS，手机仍需安全地信任 B 的证书。
+不转发 HY2 / QUIC / 原生 UDP；TCP 节点内封装的 UDP 能否使用取决于 B 与客户端。
+TCP 可达性检查不代表节点认证通过、流媒体解锁或实际提速。
+请放行 A 的转发 TCP 端口（UFW 与云防火墙），并确保 B 允许 A 的 TCP 连接。
+域名落地会动态解析，勿将别名指向 A 的任意转发入口，以免产生回环。
+独立备份在 /etc/singbox-v2/haproxy-backups；完整管理备份也包含 haproxy 子目录。
+恢复 sing-box 后，在本菜单 10 单独恢复该子目录，不自动覆盖现有 TCP 转发规则。
+仅管理 skybyte-haproxy.service 和 /etc/singbox-v2/haproxy 中的托管文件。
+菜单 2 可按 ID 修改规则；更换 B 后，手机的认证与 SNI 等参数也需按新的 B 更新。
+现有 /etc/haproxy/haproxy.cfg、其他服务和防火墙规则均保留。
+转发入口应由 B 的节点认证保护，请使用自己控制的可信 B。
+HAPROXY_HELP_ZH
+ fi
+ printf '%s' "$RESET"
+}
+haproxy_menu(){
+ haproxy_guard || return 1
+ local choice value
+ printf '%s' "$YELLOW"
+ say 'TCP 透传：手机使用 B 的节点参数，连接 A 的转发端口；用量与配额在 B 管理。' "TCP passthrough: the phone uses B's node parameters through A's forwarding port; manage usage/quotas on B."
+ printf '%s' "$RESET"
+ prompt_options $' 1. 添加 TCP 规则\n 2. 修改 TCP 规则\n 3. 规则与状态\n 4. 启动与开机自启\n 5. 停止并关闭自启\n 6. 重启\n 7. 测试 B 的 TCP 连接\n 8. 删除规则\n 9. 备份\n10. 恢复\n11. 卸载 HAProxy 中转\n12. 使用说明\n 0. 返回' $' 1. Add TCP rule\n 2. Edit TCP rule\n 3. Rules/status\n 4. Start/enable at boot\n 5. Stop/disable at boot\n 6. Restart\n 7. Test B TCP\n 8. Remove rule\n 9. Backup\n10. Restore\n11. Uninstall HAProxy relay\n12. Usage guide\n 0. Back'
+ prompt_read '> ' choice || return 0
+ case $choice in
+  0) return 0;;12) haproxy_help;;
+  1) haproxy_add;;
+  2) haproxy_engine list;prompt_read "$(L '要修改的规则 ID（重新填写该规则参数）：' 'Rule ID to edit (re-enter its parameters): ')" value || return 0;[[ $value =~ ^[a-f0-9]{12}$ ]] || { err "$(L '规则 ID 无效' 'Invalid rule ID')";return 1; };haproxy_engine check_id "$value" && haproxy_add "$value";;
+  3) haproxy_engine list;[[ ! -d $BASE/haproxy ]] || systemctl --no-pager status skybyte-haproxy.service || :;;
+  4) confirm "$(L '启动并启用开机自启？' 'Start and enable at boot?')" && haproxy_install_binary && haproxy_engine start;;
+  5) confirm "$(L '停止 TCP 转发并关闭开机自启？' 'Stop TCP forwarding and disable at boot?')" && haproxy_engine stop;;
+  6) confirm "$(L '重启 TCP 转发？现有转发连接可能断开。' 'Restart TCP forwarding? Existing connections may disconnect.')" && haproxy_engine restart;;
+  7) haproxy_engine probe;;
+  8) haproxy_engine list;prompt_read "$(L '要删除的规则 ID：' 'Rule ID to remove: ')" value || return 0;confirm "$(L '删除此规则？最后一条删除后服务也会移除。' 'Remove this rule? Removing the last rule also removes the service.')" && haproxy_engine remove "$value";;
+  9) haproxy_engine backup;;
+  10) say '填写独立备份目录，或完整备份中的 haproxy 子目录。恢复会替换现有 TCP 规则并按备份状态启停服务。' 'Supply a standalone backup directory or the haproxy subdirectory in a full backup. Restore replaces current TCP rules and restores saved service activity.';prompt_read "$(L 'HAProxy 备份目录：' 'HAProxy backup directory: ')" value || return 0;confirm "$(L '校验并恢复 HAProxy 规则？' 'Validate and restore HAProxy rules?')" && haproxy_install_binary && haproxy_engine restore "$value";;
+  11) confirm "$(L '备份并卸载本工具的 HAProxy TCP 转发？保留软件包、外部配置与防火墙规则。' 'Back up and remove managed HAProxy TCP forwarding? Keep the package, external config and firewall rules.')" && haproxy_engine purge;;
+  *) err "$(L '无效选项' 'Invalid choice')";return 1;;
+ esac
+}
 
 installation_commit(){
  python3 - "$@" <<'PY_INSTALL_COMMIT'
@@ -3447,7 +4002,7 @@ def address(s):
   if len(s)>253 or not re.fullmatch(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}',s):raise ValueError('Invalid address/domain')
   return s.lower()
 def port(s):
- if not s.isdecimal() or len(s)>5 or not 1024<=int(s)<=65535:raise ValueError('Port requires 1024-65535')
+ if not s.isdecimal() or len(s)>5 or not (int(s)==443 or 1024<=int(s)<=65535):raise ValueError('Port requires 443 or 1024-65535')
  return int(s)
 def write(p,d):
  p.parent.mkdir(parents=True,exist_ok=True,mode=0o700);p.write_text(json.dumps(d,indent=2));p.chmod(0o600)
@@ -3590,6 +4145,7 @@ configuration_apply(){
  local stage snap admin=false users=false argo=false hop_active=false
  stage=$(mktemp -d "$BASE/edit.XXXXXX") || return 1
  if ! configuration_engine "$stage" "$@";then rm -rf "$stage";return 1;fi
+ if ! haproxy_engine check_configs "$stage";then rm -rf "$stage";return 1;fi
  snap=$(backup) || { rm -rf "$stage";return 1; }
  if systemctl is-active --quiet sing-box.service;then admin=true;fi
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service;then users=true;users_stop || { rm -rf "$stage";return 1; };fi
@@ -4003,6 +4559,7 @@ online_setup(){
  prompt_read "$(L '订阅域名（DNS指向本机）：' 'Subscription hostname (DNS points here): ')" host || return 0
  prompt_read "$(L 'HTTPS 端口 [8443]：' 'HTTPS port [8443]: ')" port || return 0;port=${port:-8443}
  valid_port "$port" && ((10#$port>=1024)) || return 1
+ haproxy_engine check_port "$port" || return 1
  if ss -H -ltn "( sport = :$port )" | grep -q .;then err "$(L '端口已占用' 'Port occupied')";return 1;fi
  prompt_read "$(L '可信 TLS 完整证书路径（回车用托管 ACME）：' 'Trusted TLS fullchain (Enter for managed ACME): ')" cert || return 0
  prompt_read "$(L 'TLS 私钥路径（回车用托管 ACME）：' 'TLS private key (Enter for managed ACME): ')" key || return 0
@@ -4149,6 +4706,7 @@ SKYBYTE Manager — quick guide
 9. Versions: main 5 → 1 selects this release's tested core, latest stable or a specific version/downgrade. Every managed config must validate; weekly auto-update remains removed.
 10. Resources: main 4 → 7. Each account uses a core. Capacity depends on measured memory/CPU/traffic. Account quotas are periodically enforced, not byte-exact billing.
 11. Residential landing / VPS relay: main 4 → 10, then 6 for step-by-step help. Import one Reality/Vision or HY2 landing URI/JSON. Clients connect to this VPS and destinations see the landing exit. Self-signed HY2 requires trusted public certificate material. Relay and WARP are alternative routing policies; failed relay traffic has no automatic direct fallback. Measure both links before judging speed.
+12. HAProxy TCP passthrough: main 4 → 11, then 12 for help. A may run only the TCP forwarder; B runs the authenticated Reality/Trojan node. On the phone, keep B's credentials/SNI/TLS trust and change only the address/port to A. HY2/raw UDP are unsupported. User quotas belong on B. This menu has separate backup/restore/uninstall controls; full sing-box backups include a haproxy subdirectory for separate restoration.
 CLI: --help, --self-check. Maintenance flags are used by owned systemd services.
 HELP_EN
  else cat <<'HELP_ZH'
@@ -4164,6 +4722,7 @@ SKYBYTE Manager — 快速使用说明
 9. 版本：主菜单5 → 1选本版测试内核、最新稳定版或指定版本/降级，须检查全部托管配置。每周自动更新保持移除。
 10. 资源：主菜单4 → 7，每个用户一个内核，容量需实测。配额周期检查，不是精确计费。
 11. 住宅落地 / VPS 中转：主菜单4 → 10，再选6查看具体步骤，导入一个 Reality/Vision 或 HY2 落地链接/JSON。客户端连接本 VPS，网站看到落地出口。自签名 HY2 须提供可信公开证书；中转与 WARP 分流择一启用，中转失败不自动直连。速度需按两段链路实测。
+12. HAProxy TCP 透传：主菜单4 → 11，再选12查看说明。A 可只运行 TCP 转发，B 运行带认证的 Reality/Trojan 节点；手机保留 B 的认证、SNI及TLS验证，仅改连接地址和端口为 A。不支持 HY2/原生UDP。配额在 B 管理。本菜单可单独备份、恢复与卸载，完整 sing-box 备份中的 haproxy 子目录需单独恢复。
 命令行：--help、--self-check。维护参数供本工具的 systemd 服务使用。
 HELP_ZH
  fi
@@ -4217,6 +4776,7 @@ sub_menu(){
    say ' 8. 流媒体可用性检测' ' 8. Streaming availability tests'
    say ' 9. WARP 出站与分流' ' 9. WARP egress and routing'
    say '10. 住宅落地 / VPS 中转' '10. Residential landing / VPS relay'
+   say '11. HAProxy TCP 透传' '11. HAProxy TCP passthrough'
    ;;
   5)
    say ' 1. 手动更新 sing-box' ' 1. Update sing-box'
@@ -4262,6 +4822,7 @@ sub_menu(){
   4:8) MAIN_ACTION=media;;
   4:9) MAIN_ACTION=warp;;
   4:10) MAIN_ACTION=relay;;
+  4:11) MAIN_ACTION=haproxy;;
   5:1) MAIN_ACTION=update;;
   5:2) MAIN_ACTION=backup;;
   5:3) MAIN_ACTION=restore;;
@@ -4282,7 +4843,7 @@ dispatch_action(){
  argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;; qr) shadowrocket_qr;; users) users_manager;;
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
- media) media_check;; warp) warp_menu;; relay) relay_menu;;
+ media) media_check;; warp) warp_menu;; relay) relay_menu;; haproxy) haproxy_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
  update) core_versions;; settings) node_settings;; online) online_menu;; acme) acme_menu;; backup_tools) backup_tools;; help) usage_help;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;

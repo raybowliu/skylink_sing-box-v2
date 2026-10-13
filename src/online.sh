@@ -20,6 +20,7 @@ online_setup(){
  prompt_read "$(L '订阅域名（DNS指向本机）：' 'Subscription hostname (DNS points here): ')" host || return 0
  prompt_read "$(L 'HTTPS 端口 [8443]：' 'HTTPS port [8443]: ')" port || return 0;port=${port:-8443}
  valid_port "$port" && ((10#$port>=1024)) || return 1
+ haproxy_engine check_port "$port" || return 1
  if ss -H -ltn "( sport = :$port )" | grep -q .;then err "$(L '端口已占用' 'Port occupied')";return 1;fi
  prompt_read "$(L '可信 TLS 完整证书路径（回车用托管 ACME）：' 'Trusted TLS fullchain (Enter for managed ACME): ')" cert || return 0
  prompt_read "$(L 'TLS 私钥路径（回车用托管 ACME）：' 'TLS private key (Enter for managed ACME): ')" key || return 0

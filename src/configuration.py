@@ -10,7 +10,7 @@ def address(s):
   if len(s)>253 or not re.fullmatch(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}',s):raise ValueError('Invalid address/domain')
   return s.lower()
 def port(s):
- if not s.isdecimal() or len(s)>5 or not 1024<=int(s)<=65535:raise ValueError('Port requires 1024-65535')
+ if not s.isdecimal() or len(s)>5 or not (int(s)==443 or 1024<=int(s)<=65535):raise ValueError('Port requires 443 or 1024-65535')
  return int(s)
 def write(p,d):
  p.parent.mkdir(parents=True,exist_ok=True,mode=0o700);p.write_text(json.dumps(d,indent=2));p.chmod(0o600)

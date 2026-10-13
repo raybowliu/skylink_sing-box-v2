@@ -16,6 +16,7 @@ configuration_apply(){
  local stage snap admin=false users=false argo=false hop_active=false
  stage=$(mktemp -d "$BASE/edit.XXXXXX") || return 1
  if ! configuration_engine "$stage" "$@";then rm -rf "$stage";return 1;fi
+ if ! haproxy_engine check_configs "$stage";then rm -rf "$stage";return 1;fi
  snap=$(backup) || { rm -rf "$stage";return 1; }
  if systemctl is-active --quiet sing-box.service;then admin=true;fi
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service;then users=true;users_stop || { rm -rf "$stage";return 1; };fi

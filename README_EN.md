@@ -18,6 +18,7 @@ The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential 
 - [WARP egress and dual-stack](#warp-egress-and-dual-stack-v24)
 - [Personal HTTPS subscriptions](#independent-https-subscriptions-v25)
 - [Residential IP landing and VPS relay](#residential-ip-landing-and-vps-relay-v26)
+- [HAProxy TCP passthrough](#haproxy-tcp-passthrough-v27)
 - [Source modules and build](#source-modules-and-build) · [Validation](#validation)
 - [FAQ](#faq) · [VPS provider affiliate links](#vps-provider-affiliate-links)
 
@@ -43,7 +44,7 @@ Fresh installation uses the official sing-box 1.14.3 binary tested for this mana
 | 1 | Install nodes | Reality / HY2 / dual; Quick / Named; node edits / protocol changes |
 | 2 | Nodes and subscriptions | Information / exports / custom names / QR codes / accounts / personal HTTPS subscriptions |
 | 3 | Services and logs | Controls / logs / Argo status |
-| 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / resources / media / WARP / residential landing relay |
+| 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / resources / media / WARP / sing-box relay / HAProxy TCP passthrough |
 | 5 | Updates and backups | Core versions / backup / restore / manager updates / certificates / ACME / encrypted backups |
 | 6 | Settings and uninstall | Language / privacy / uninstall / guide |
 | 7 | Users and quotas | Accounts / usage / quota / expiry / diagnostics / resources |
@@ -172,7 +173,7 @@ Backups include policies, usage, configurations and certificates. Restore retain
 
 ## Source modules and build
 
-Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), `warp.sh`/`warp.py` (gateway/owned routing), `relay.sh` (residential landing relay), `configuration.sh`/`configuration.py` (node edits), `acme.sh` (issuance), `online.sh`/`online.py` (HTTPS delivery), `reliability.sh`/`backup.py` (transactions/versions/backups) and `help.sh` (guide). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
+Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), `warp.sh`/`warp.py` (gateway/owned routing), `relay.sh` (sing-box residential relay), `haproxy.sh`/`haproxy.py` (independent TCP passthrough), `configuration.sh`/`configuration.py` (node edits), `acme.sh` (issuance), `online.sh`/`online.py` (HTTPS delivery), `reliability.sh`/`backup.py` (transactions/versions/backups) and `help.sh` (guide). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
 
 The original `install.sh` entry remains sufficient: deployed scripts contain all modules and require no runtime module downloads. `bash singbox-v2.sh --self-check` checks embedded Python syntax and outputs the version without root. systemd/UFW operations are tested through isolated mocks; actual VPS deployment still needs verification.
 
@@ -253,7 +254,7 @@ Restore retains current account policy/usage and current subscription tokens. HT
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.2
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.7.0
 ```
 
 Packaging includes only install.sh, the full bundle, public rule catalog and SHA256SUMS, never runtime state or credentials.
@@ -323,6 +324,28 @@ Controls include connection tests, global relay, direct restoration and deletion
 Existing sing-box cores handle forwarding without an extra public proxy listener or relay daemon. Imports use field allowlists and refuse unknown routing changes and obvious loops back to managed listeners. Private routing state/backups hold landing credentials and embedded public trust material; existing update/restore/uninstall workflows manage them. Verify that DNS aliases, external forwarding or multiple VPS instances cannot create a loop.
 
 **Speed depends on latency, loss and bandwidth on both links, both VPS CPUs and the residential connection's upload capacity.** Relay cannot remove landing bottlenecks. Compare real uploads/downloads and latency with direct access. The built-in check validates TCP/HTTPS reachability, not residential-IP classification, service unlocking, public UDP reachability or speed improvement. Both providers may count transferred traffic. Protocol fields follow [sing-box VLESS](https://sing-box.sagernet.org/configuration/outbound/vless/) and [sing-box Hysteria2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/).
+
+## HAProxy TCP passthrough (V2.7)
+
+Open **4 → 11 HAProxy TCP passthrough**, then **12 Usage guide**. Use this when A has a good client-facing route and B runs a TCP node, such as **VLESS + Reality + Vision** or an existing **Trojan** node. A can run only HAProxy; this mode does not require a sing-box node on A.
+
+```text
+Phone → A HAProxy TCP forwarder → B node → website
+```
+
+1. **Prepare B.** This manager can install Reality/Vision; an existing Trojan/TCP node from another tool also works. Keep B's egress direct to retain the residential IP and allow B's actual node TCP port from A.
+2. **Add forwarding on A.** Open **4 → 11 → 1**. Enter the name, A's listen IP and forwarding port, and B's IP/hostname and TCP node port. Defaults: A listens on `0.0.0.0:8443`; B uses port `443`. IPv6 listen `::` is IPv6-only. One rule per entry port, up to 16 rules; Enter accepts the default name.
+3. **Type `YES` to enable.** Busy ports, ports reserved by managed TCP nodes, obvious local loops and B's TCP reachability are checked. The configuration must pass `haproxy -c`. Failures leave previous configuration; restart failures restore previous files, activity and boot state. Changes briefly interrupt forwarded connections. Active UFW gets an allow rule for the new TCP port; configure provider firewalls separately.
+4. **Edit B's node on the phone.** Copy B's node and change only the connection address to **A's public IP/hostname** and the connection port to **A's forwarding port**. Keep B's UUID/password, SNI, Reality public key/Short ID, fingerprint and certificate verification. A stores no node authentication/private key and needs no B CA file. For self-signed TLS on B, the phone must still securely trust B's certificate.
+5. **Connect and check.** Shadowrocket uses the edited node; destinations should see B's exit IP. Authentication, per-user usage/quotas and expiry belong on **B**. HAProxy forwarding bypasses A's sing-box account service and cannot be charged against A's personal quotas.
+
+This passes TCP bytes without terminating TLS, adding insecure TLS options or PROXY headers. **HY2/QUIC/raw UDP are unsupported**; protocol-carried UDP inside a TCP node depends on B/client support. Use the sing-box relay at **4 → 10** for HY2. TCP reachability does not verify authentication, streaming access or speed improvements; test with the client. DNS targets are re-resolved: keep aliases from pointing back to any entry rule, and avoid cross-server forwarding loops. Use your own trusted B with authenticated nodes.
+
+The independent service is `skybyte-haproxy.service`; files live under `/etc/singbox-v2/haproxy/`, with directory mode 700 and state/config mode 600. HAProxy is installed on demand from Ubuntu/Debian repositories with existing package configuration retained. First installation prevents the default service from starting automatically; an unenabled default service stays disabled. Existing external HAProxy services are not stopped or reconfigured. Workers use the distro `haproxy` account; the owned service restricts capabilities/filesystem access.
+
+The submenu provides status, activity/boot controls, restart, TCP tests and rule removal. **2 Edit rule** replaces a landing/listener while keeping other rules; if B changes, update B's authentication/SNI on the phone as needed. **9 Backup, 10 Restore, 11 Uninstall**: existing rules are also automatically backed up before applying changes under `/etc/singbox-v2/haproxy-backups/`. Restore validates and replaces TCP rules, restoring saved activity/boot state. Full sing-box backups include a `haproxy` subdirectory; restore it separately through menu 10 after restoring sing-box, preserving current forwarding until explicitly requested. Full manager uninstall backs up and removes the owned relay; independent removal is available too. Keep the package, external `/etc/haproxy/haproxy.cfg`, other services, backups and firewall rules. Unknown files, modified units and symlinks cause refusal.
+
+TCP forwarding and validation follow the [HAProxy TCP documentation](https://www.haproxy.com/documentation/haproxy-configuration-tutorials/protocol-support/tcp/) and [HAProxy 2.6 manual](https://docs.haproxy.org/2.6/configuration.html).
 
 ## FAQ
 
