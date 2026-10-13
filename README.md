@@ -1,6 +1,6 @@
-# SKYBYTE Manager V2.5
+# SKYBYTE Manager V2.5 — sing-box 一键脚本与 Ubuntu/Debian VPS 管理
 
-基于 Bash 的 Ubuntu/Debian VPS 管理工具，提供简体中文和 English 界面。
+**SKYBYTE Manager** 是基于 Bash 的 Ubuntu/Debian VPS 管理工具，提供简体中文和 English 界面，支持 sing-box 的 **VLESS + Reality + Vision、Hysteria2（HY2）及双协议部署**。通过交互菜单管理 Cloudflare Argo 隧道、WARP 出站分流、用户流量配额与有效期，并导出 Shadowrocket（小火箭）、v2rayN、Clash Verge/Mihomo/OpenClash 和 sing-box JSON 客户端配置。
 
 YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](README_EN.md)
 
@@ -8,7 +8,19 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 
 主菜单包含 SKYBYTE ASCII logo；菜单绿色加粗、节点链接红色加粗、警告黄色加粗、错误红色加粗。支持 ANSI 的交互终端显示颜色，`NO_COLOR=1` 可关闭。所有 `YES` 确认不区分大小写。
 
-## 安装入口
+## 快速导航
+
+- [Ubuntu/Debian VPS 一键安装](#ubuntudebian-vps-一键安装)
+- [菜单与功能](#菜单与功能)
+- [Hysteria2 / HY2 与安全证书验证](#hysteria2--hy2-与安全证书验证)
+- [Cloudflare Argo 临时 / 固定隧道](#argo-临时--固定隧道)
+- [用户数量、流量与有效期](#用户数量流量与有效期)
+- [WARP 出站与双栈](#warp-出站与双栈v24)
+- [个人 HTTPS 在线订阅](#每人独立-https-在线订阅v25)
+- [源码模块与构建](#源码模块与构建) · [测试与范围](#测试与范围)
+- [常见问题](#常见问题) · [VPS 服务商推广链接](#vps-服务商推广链接)
+
+## Ubuntu/Debian VPS 一键安装
 
 需要 root、Ubuntu/Debian、systemd 和可用的公网 IPv4 或 IPv6；支持 x86_64/arm64。保留 `install.sh` 一键入口：
 
@@ -38,11 +50,11 @@ sudo bash install.sh
 
 初始化更新 apt 索引、升级软件、安装常用工具，检查时间同步、DNS、HTTPS、SSH 和 UFW。保留已有运行中的时间同步服务；不自动开启 UFW、改变 SSH 端口、设置 BBR 或重启。系统升级可能重启相关服务，应保留 VPS 控制台。
 
-开启 UFW 前，从 sshd 监听、`sshd -T` 和当前 `SSH_CONNECTION` 识别 SSH 端口，再要求人工核实；已识别端口与确认端口均会放行。同时按实际配置放行协议端口与已启用的 HY2 跳跃范围。菜单 4 → 3 检查 UDP 443 和跳跃范围规则；复杂 UFW 规则可能需要人工判断，无法读取云安全组。
+开启 UFW 前，从 sshd 监听、`sshd -T` 和当前 `SSH_CONNECTION` 识别 SSH 端口，再要求人工核实；已识别端口与确认端口均会放行。同时按实际配置放行协议端口与已启用的 HY2 跳跃范围。菜单 4 → 3 检查实际 HY2 UDP 端口和跳跃范围规则；复杂 UFW 规则可能需要人工判断，无法读取云安全组。
 
 vnStat 显示 **VPS 网卡总流量**，不能当作 Reality/HY2 各自流量；历史统计从 vnStat 开始采集时起算。
 
-## HY2 与安全证书验证
+## Hysteria2 / HY2 与安全证书验证
 
 安装时可输入节点名称前缀，直接回车默认 `SKYBYTE`；已有部署可使用菜单 **2 → 3** 修改。导出名称自动附加 `-Reality` 或 `-HY2`，例如 `香港线路-Reality`、`香港线路-HY2`，避免双协议重名。名称最多 64 个字符，支持中文、空格及常用符号；URI 名称会正确编码。名称在所有客户端格式中保持一致，修改名称不改服务端配置、UUID 或密码，也不重启服务。节点名称、客户端类型、文件路径和说明在支持颜色的终端中显示黄色加粗，链接和配置内容保持红色。
 
@@ -255,3 +267,37 @@ python3 scripts/package_release.py --output /tmp/skybyte-release-2.5.0
 SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
   --engine /path/to/sing-box --counts 10,30,50 --output /tmp/account-benchmark.json
 ```
+
+## 常见问题
+
+### SKYBYTE Manager 支持哪些 VPS 系统？
+
+支持使用 systemd 的 Ubuntu/Debian VPS，架构为 x86_64 或 arm64，运行管理功能需要 root 权限。自动化测试覆盖 Ubuntu 24.04 和 Debian 12；其他系统版本需自行验证。
+
+### Hysteria2 必须购买域名和证书吗？
+
+不必。HY2 可以自动生成带公网 IP 的自签名证书，但客户端需要建立可信验证，不能默认跳过 TLS 验证。域名部署可使用已有证书或申请 ACME 证书；个人 HTTPS 在线订阅需要域名和可信证书。
+
+### 小火箭、v2rayN 和 Clash Verge 如何导入节点？
+
+菜单 **2 → 2** 导出客户端文件，**2 → 4** 显示小火箭节点二维码。文件在 VPS 的 `/etc/singbox-v2/`，可通过 SSH/SFTP 获取。Clash Verge Rev/Mihomo 使用完整 YAML，OpenClash 可合并 Mihomo 配置片段；请核实所用内核的协议支持。个人在线订阅通过 **2 → 6** 单独启用。
+
+### WARP 出站一定能解锁流媒体和 AI 服务吗？
+
+不能保证。可选择全局直连、全局 WARP 或仅指定流媒体与 AI 域名走 WARP；实际可用性取决于出口 IP、平台策略及账户。流媒体检测结果仅表示检测时的 VPS 出口响应。
+
+## VPS 服务商推广链接
+
+如果你正在寻找用于 Ubuntu/Debian、sing-box 或 Hysteria2 部署的 VPS，可以查看以下服务商。购买前请自行确认机房位置、系统镜像、UDP 支持、流量额度及使用条款。
+
+| 服务商 | 推广入口 |
+| --- | --- |
+| RackNerd | [查看 RackNerd VPS](https://my.racknerd.com/aff.php?aff=18647) |
+| DMIT | [查看 DMIT VPS](https://www.dmit.io/aff.php?aff=18635) |
+| AkileCloud | [访问 AkileCloud](https://akile.ai/register?aff_code=0be67084-ae2e-4095-a586-2a3ee5c970f0) |
+| BandwagonHost（搬瓦工） | [查看 BandwagonHost VPS](https://bandwagonhost.com/aff.php?aff=83101) |
+| LisaHost（丽萨主机） | [查看 LisaHost VPS](https://lisahost.com/aff.php?aff=11072) |
+
+**推广说明：** 上述链接包含作者的推广标识，通过这些链接购买可能为作者带来佣金，用于支持 SKYBYTE Manager 的开发与维护。列表不代表性能排名或流媒体解锁承诺，价格、库存与服务条件以服务商页面为准。
+
+欢迎 [订阅 SKYBYTE YouTube 频道](https://www.youtube.com/@SKYBYTE9119)，获取脚本更新和 VPS 使用教程。

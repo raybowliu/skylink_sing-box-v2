@@ -1,6 +1,6 @@
-# SKYBYTE Manager V2.5
+# SKYBYTE Manager V2.5 — sing-box Installer and Ubuntu/Debian VPS Management
 
-A Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces.
+**SKYBYTE Manager** is a Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces. It installs sing-box with **VLESS + Reality + Vision, Hysteria2 (HY2), or both protocols**, manages Cloudflare Argo tunnels and WARP routing, and provides per-user traffic quotas and expiry. Client exports support Shadowrocket, v2rayN, Clash Verge/Mihomo/OpenClash and sing-box JSON.
 
 YouTube: [SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [中文](README.md)
 
@@ -8,7 +8,19 @@ If you find this script helpful, please subscribe to my YouTube channel and supp
 
 The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential links bold red, warnings bold yellow and errors bold red on ANSI terminals. Set `NO_COLOR=1` to disable colors. Every YES confirmation is case-insensitive.
 
-## Installation
+## Quick navigation
+
+- [Ubuntu/Debian VPS installation](#ubuntudebian-vps-installation)
+- [Menu and features](#menu-and-features)
+- [Hysteria2 / HY2 and verified TLS](#hysteria2--hy2-and-verified-tls)
+- [Cloudflare Argo Quick / Named Tunnels](#argo-quick--named-tunnels)
+- [Account limits, traffic quotas and expiry](#account-limits-traffic-quotas-and-expiry)
+- [WARP egress and dual-stack](#warp-egress-and-dual-stack-v24)
+- [Personal HTTPS subscriptions](#independent-https-subscriptions-v25)
+- [Source modules and build](#source-modules-and-build) · [Validation](#validation)
+- [FAQ](#faq) · [VPS provider affiliate links](#vps-provider-affiliate-links)
+
+## Ubuntu/Debian VPS installation
 
 Requires root, Ubuntu/Debian, systemd and a reachable public IPv4 or IPv6 address. Supports x86_64/arm64. The existing `install.sh` entry point remains available:
 
@@ -38,11 +50,11 @@ Fresh installation uses the official sing-box 1.14.3 binary tested for this mana
 
 Initialization updates apt indexes, upgrades packages, installs administration tools and checks time synchronization, DNS, HTTPS, SSH and UFW. It preserves an active time-sync service and does not enable UFW, change SSH, configure BBR or reboot. Package upgrades may restart services; retain console access.
 
-Before enabling UFW, the manager detects SSH ports from sshd listeners, `sshd -T` and `SSH_CONNECTION`, then asks you to verify the port. Detected ports and the verified port are allowed, together with deployed protocol ports and active HY2 hopping ranges. Menu 4 → 3 audits UDP 443 and range rules. Complex UFW rules require manual inspection; provider security groups cannot be inspected by this script.
+Before enabling UFW, the manager detects SSH ports from sshd listeners, `sshd -T` and `SSH_CONNECTION`, then asks you to verify the port. Detected ports and the verified port are allowed, together with deployed protocol ports and active HY2 hopping ranges. Menu 4 → 3 audits the configured HY2 UDP port and hopping range rules. Complex UFW rules require manual inspection; provider security groups cannot be inspected by this script.
 
 vnStat reports **total VPS interface traffic**, never separate Reality/HY2 traffic. History starts when vnStat begins collecting data.
 
-## HY2 and verified TLS
+## Hysteria2 / HY2 and verified TLS
 
 Installation accepts a node name prefix; press Enter for `SKYBYTE`. Existing deployments can use menu **2 → 3**. Exports append `-Reality` or `-HY2` to avoid duplicate protocol names. Names support up to 64 characters, including Chinese, spaces and ordinary symbols; URI fragments are percent-encoded. All client formats use the same names. Renaming preserves server configuration, UUIDs and passwords and does not restart the service. Node names, client headings, file paths and instructions use bold yellow on color terminals; links and configuration contents remain red.
 
@@ -255,3 +267,37 @@ Metering threads reuse their loopback HTTP clients and unchanged idle ledgers av
 SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
   --engine /path/to/sing-box --counts 10,30,50 --output /tmp/account-benchmark.json
 ```
+
+## FAQ
+
+### Which VPS operating systems does SKYBYTE Manager support?
+
+Ubuntu/Debian VPS instances using systemd, on x86_64 or arm64. Management requires root. Automated tests cover Ubuntu 24.04 and Debian 12; validate other versions before deployment.
+
+### Does Hysteria2 require a domain and a purchased certificate?
+
+No. HY2 can generate a self-signed certificate for the public IP, but clients must establish certificate trust with TLS verification enabled. Domain deployments can use an existing certificate or ACME issuance. Personal HTTPS subscriptions require a domain and a trusted certificate.
+
+### How do I import nodes into Shadowrocket, v2rayN or Clash Verge?
+
+Menu **2 → 2** exports client files, and **2 → 4** displays Shadowrocket node QR codes. Retrieve files from `/etc/singbox-v2/` on your VPS over SSH/SFTP. Clash Verge Rev/Mihomo uses the complete YAML; OpenClash can merge the Mihomo fragment. Check protocol support in your client core. Enable personal online subscriptions separately through **2 → 6**.
+
+### Does WARP guarantee streaming or AI service access?
+
+No. Routing supports direct-only, global WARP, or WARP for selected streaming and AI domains. Availability depends on the egress IP, platform policies and account. Streaming probes report the VPS egress response at the time of testing.
+
+## VPS provider affiliate links
+
+If you are looking for a VPS to run Ubuntu/Debian, sing-box or Hysteria2, you can explore the providers below. Check location, operating system images, UDP support, traffic allowances and service terms before purchasing.
+
+| Provider | Affiliate link |
+| --- | --- |
+| RackNerd | [Explore RackNerd VPS](https://my.racknerd.com/aff.php?aff=18647) |
+| DMIT | [Explore DMIT VPS](https://www.dmit.io/aff.php?aff=18635) |
+| AkileCloud | [Visit AkileCloud](https://akile.ai/register?aff_code=0be67084-ae2e-4095-a586-2a3ee5c970f0) |
+| BandwagonHost | [Explore BandwagonHost VPS](https://bandwagonhost.com/aff.php?aff=83101) |
+| LisaHost | [Explore LisaHost VPS](https://lisahost.com/aff.php?aff=11072) |
+
+**Affiliate disclosure:** These links contain the author's referral identifiers. Purchases through them may earn the author a commission to support SKYBYTE Manager development and maintenance. Listings do not rank performance or promise streaming access; current pricing, availability and terms are determined by each provider.
+
+[Subscribe to SKYBYTE on YouTube](https://www.youtube.com/@SKYBYTE9119) for script updates and VPS tutorials.
