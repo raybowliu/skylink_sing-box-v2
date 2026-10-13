@@ -19,6 +19,7 @@ sub_menu(){
    say ' 2. 安装 Hysteria2' ' 2. Install Hysteria2'
    say ' 3. 安装双协议' ' 3. Install both protocols'
    say ' 4. Argo 临时 / 固定隧道管理' ' 4. Argo Quick / Named Tunnel controls'
+   say ' 5. 节点参数与协议增删' ' 5. Node settings and protocol changes'
    ;;
   2)
    say ' 1. 查看节点与各客户端格式' ' 1. View nodes and client formats'
@@ -26,6 +27,7 @@ sub_menu(){
    say ' 3. 自定义节点名称' ' 3. Customize node names'
    say ' 4. 小火箭节点二维码' ' 4. Shadowrocket node QR codes'
    say ' 5. 用户数量、流量与有效期管理' ' 5. Account limits, traffic quotas and expiry'
+   say ' 6. HTTPS 个人在线订阅' ' 6. Personal HTTPS subscriptions'
    ;;
   3)
    say ' 1. sing-box 状态与启停' ' 1. sing-box status and controls'
@@ -49,11 +51,14 @@ sub_menu(){
    say ' 3. 恢复配置' ' 3. Restore configuration'
    say ' 4. 检查 / 更新 SKYBYTE Manager 管理脚本' ' 4. Check / update SKYBYTE Manager script'
    say ' 5. HY2 证书检查与续签重载' ' 5. HY2 certificate checks and renewal reload'
+   say ' 6. ACME 证书申请与续签' ' 6. ACME issuance and renewal'
+   say ' 7. 备份管理与加密导出' ' 7. Backup management and encryption'
    ;;
   6)
    say ' 1. 切换语言' ' 1. Change language'
    say ' 2. 法律与隐私声明' ' 2. Legal and privacy notice'
    say ' 3. 卸载 SKYBYTE Manager / sing-box' ' 3. Uninstall SKYBYTE Manager / sing-box'
+   say ' 4. 使用说明' ' 4. Usage guide'
    ;;
  esac
  say ' 0. 返回主菜单' ' 0. Back to main menu'
@@ -64,11 +69,13 @@ sub_menu(){
   1:2) MAIN_ACTION=install_hy2;;
   1:3) MAIN_ACTION=install_dual;;
   1:4) MAIN_ACTION=argo;;
+  1:5) MAIN_ACTION=settings;;
   2:1) MAIN_ACTION=nodes;;
   2:2) MAIN_ACTION=subscription;;
   2:3) MAIN_ACTION=rename;;
   2:4) MAIN_ACTION=qr;;
   2:5) MAIN_ACTION=users;;
+  2:6) MAIN_ACTION=online;;
   3:1) MAIN_ACTION=service;;
   3:2) MAIN_ACTION=logs;;
   3:3) MAIN_ACTION=argo_status;;
@@ -86,9 +93,12 @@ sub_menu(){
   5:3) MAIN_ACTION=restore;;
   5:4) MAIN_ACTION=manager_update;;
   5:5) MAIN_ACTION=certificate;;
+  5:6) MAIN_ACTION=acme;;
+  5:7) MAIN_ACTION=backup_tools;;
   6:1) MAIN_ACTION=language;;
   6:2) MAIN_ACTION=notice;;
   6:3) MAIN_ACTION=uninstall;;
+  6:4) MAIN_ACTION=help;;
   *:0) return 0;; *) err "$(L '无效选项' 'Invalid choice')";;
  esac
 }
@@ -100,7 +110,7 @@ dispatch_action(){
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
  media) media_check;; warp) warp_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
- update) update;; backup) backup;; restore) restore;;
+ update) core_versions;; settings) node_settings;; online) online_menu;; acme) acme_menu;; backup_tools) backup_tools;; help) usage_help;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;
  esac
 }
@@ -109,6 +119,8 @@ main(){
  local group action_status
  retire_auto_update || return 1
  startup_info
+ # An idle main menu must not hold off certificate renewal.
+ flock -u 9
  while :; do
   printf '%s\n==============================================\n' "$CYAN"
   cat <<LOGO
@@ -139,10 +151,12 @@ LOGO
   [[ $group != 0 ]] || return 0
   case $group in 7) MAIN_ACTION=users;; 1|2|3|4|5|6) sub_menu "$group" || return 0;; *) err "$(L '无效选项' 'Invalid choice')"; continue;; esac
   [[ -n $MAIN_ACTION ]] || continue
+  if ! flock -n 9;then err "$(L '其他管理任务正在运行，请稍后重试' 'Another management task is running; retry shortly')";continue;fi
   set +e
   ( set -Eeuo pipefail; trap action_failed ERR; dispatch_action "$MAIN_ACTION" )
   action_status=$?
   set -e
+  flock -u 9
   if [[ $MAIN_ACTION == uninstall && $action_status == 0 && ! -e $META ]]; then return 0; fi
   if [[ $MAIN_ACTION == manager_update && $action_status == 0 && -f $MANAGER_LIB ]] && ! grep -Fxq "MANAGER_VERSION=$MANAGER_VERSION" "$MANAGER_LIB"; then exec 9>&-; exec bash "$MANAGER_LIB"; fi
   load_language
@@ -156,17 +170,20 @@ bootstrap(){
  exec 9>"$LOCK"; flock -n 9 || { err "$(L '其他管理任务正在运行' 'Another manager is running')"; return 1; }
  load_language
  if [[ -z $LANGUAGE_CHOICE ]]; then
-  if [[ ${1:-} == --auto-update || ${1:-} == --certificate-check || ${1:-} == --certificate-reload || ${1:-} == --notice ]]; then LANGUAGE_CHOICE=en_US; else select_language || return 1; fi
+  if [[ ${1:-} == --auto-update || ${1:-} == --certificate-check || ${1:-} == --certificate-reload || ${1:-} == --acme-renew || ${1:-} == --notice ]]; then LANGUAGE_CHOICE=en_US; else select_language || return 1; fi
  fi
  export LANGUAGE_CHOICE
 }
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
  case ${1:-} in
+  --help|-h) load_language;usage_help;exit 0;;
   --self-check) manager_self_check; exit $?;;
+  --subscription-serve) need_root;online_guard && online_engine serve;exit $?;;
+  --subscription-export) need_root;[[ $# == 2 ]] || exit 1;require_cmd flock || exit 1;exec 9>"$LOCK";flock -s -w 10 9 || exit 1;online_guard && users_guard && users_export "$2" >/dev/null;exit $?;;
   --users-watch) need_root; load_language; LANGUAGE_CHOICE=${LANGUAGE_CHOICE:-en_US}; users_engine watch; exit $?;;
   --argo-run) need_root; load_language; LANGUAGE_CHOICE=${LANGUAGE_CHOICE:-en_US}; argo_run; exit $?;;
   --argo-export) need_root; load_language; LANGUAGE_CHOICE=${LANGUAGE_CHOICE:-en_US}; exports; exit $?;;
  esac
  bootstrap "${1:-}" || exit 1
- case "${1:-}" in --auto-update) update_auto;; --certificate-check) certificate_check;; --certificate-reload) certificate_reload;; --notice) notice;; *) main;; esac
+ case "${1:-}" in --acme-renew) acme_renew;; --auto-update) update_auto;; --certificate-check) certificate_check;; --certificate-reload) certificate_reload;; --notice) notice;; *) main;; esac
 fi

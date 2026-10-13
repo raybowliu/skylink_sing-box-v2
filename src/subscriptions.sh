@@ -2,7 +2,7 @@ exports() (
  check_owned || return
  if command -v flock >/dev/null; then exec 8>"$BASE/export.lock"; flock 8; fi
  python3 - "$META" "$BASE" "$CONF" "${LANGUAGE_CHOICE:-zh_CN}" <<'PY'
-import base64,json,os,sys,urllib.parse,subprocess,plistlib,uuid,re
+import base64,json,os,sys,urllib.parse,subprocess,plistlib,uuid,re,tempfile
 s=json.load(open(sys.argv[1]));base=sys.argv[2];ip=s['ip']
 en=sys.argv[4]=='en_US'
 def tr(zh,english): return english if en else zh
@@ -30,7 +30,10 @@ if mode!='1' and self_signed:
  fingerprint=hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert_pem)).hexdigest()
 authority_ip='['+ip+']' if ':' in ip else ip
 v='vless://{}@{}:{}?{}#{}'.format(s.get('uuid',''),authority_ip,vp,urllib.parse.urlencode({'encryption':'none','flow':'xtls-rprx-vision','security':'reality','sni':sni,'fp':'chrome','pbk':s.get('public_key',''),'sid':s.get('sid',''),'type':'tcp'}),urllib.parse.quote(reality_name,safe=''))
-h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),authority_ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}))),urllib.parse.quote(hy2_name,safe=''))
+hy2_extra={}
+if 'hysteria2' in inbound and inbound['hysteria2'].get('obfs'):
+ ob=inbound['hysteria2']['obfs'];hy2_extra={'obfs':ob['type'],'obfs-password':ob['password']}
+h='hysteria2://{}@{}:{}?{}#{}'.format(urllib.parse.quote(s.get('hy2_password',''),safe=''),authority_ip,hp,urllib.parse.urlencode(dict({'sni':d,'insecure':'0'}, **({'pinSHA256':fingerprint} if fingerprint else {}),**hy2_extra)),urllib.parse.quote(hy2_name,safe=''))
 links=[v] if mode=='1' else [h] if mode=='2' else [v,h]
 link_names=[reality_name] if mode=='1' else [hy2_name] if mode=='2' else [reality_name,hy2_name]
 argo=None;argo_note=None;argo_name=node_name+'-Argo'
@@ -50,8 +53,10 @@ if os.path.isfile(argo_state):
  else:argo_note=tr('Argo 未注册连接，暂不导出旧隧道节点。','Argo is not registered; stale tunnel nodes are not exported.')
 def write(name,content):
  path=os.path.join(base,name)
- with open(path,'wb' if isinstance(content,bytes) else 'w') as f:f.write(content)
- os.chmod(path,0o600)
+ if os.path.islink(path):raise ValueError('Export symlink')
+ fd,tmp=tempfile.mkstemp(dir=base)
+ with os.fdopen(fd,'wb' if isinstance(content,bytes) else 'w') as f:f.write(content);f.flush();os.fsync(f.fileno())
+ os.replace(tmp,path)
  return path
 node_text='\n'.join(links)+'\n'
 subscription_text=base64.b64encode(node_text.encode()).decode()+'\n'
@@ -86,9 +91,15 @@ if mode!='1':
  tls={'enabled':True,'server_name':d}
  if self_signed:tls['certificate']=cert_pem.splitlines()
  ho={'type':'hysteria2','tag':hy2_name,'server':ip,'server_port':hp,'password':s['hy2_password'],'tls':tls}
+ if inbound['hysteria2'].get('obfs'):ho['obfs']=inbound['hysteria2']['obfs']
+ for field in ('up_mbps','down_mbps'):
+  if field in inbound['hysteria2']:ho[field]=inbound['hysteria2'][field]
  if s.get('hop'):ho.update({'server_ports':[f"{s['hop_start']}:{s['hop_end']}"],'hop_interval':'30s'})
  out.append(ho)
  mp={'name':hy2_name,'type':'hysteria2','server':ip,'port':hp,'password':s['hy2_password'],'sni':d,'skip-cert-verify':False}
+ if hy2_extra:mp.update({'obfs':hy2_extra['obfs'],'obfs-password':hy2_extra['obfs-password']})
+ for field,client in [('up_mbps','up'),('down_mbps','down')]:
+  if field in inbound['hysteria2']:mp[client]=str(inbound['hysteria2'][field])+' Mbps'
  if s.get('hop'):mp['ports']=f"{s['hop_start']}-{s['hop_end']}";mp['hop-interval']=30
  if self_signed:mp['fingerprint']=fingerprint
  proxy.append(mp)

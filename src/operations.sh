@@ -12,7 +12,7 @@ print(tag[1:])
 PY
 }
 manager_update_apply(){
- local candidate=$1 version=$2 snapshot=$3 path active=false tunnel=false rc=0 stage
+ local candidate=$1 version=$2 snapshot=$3 path active=false tunnel=false rc=0 stage subscriptions=false
  local -a targets=("$MANAGER_LIB")
  for path in "$MANAGER_LIB" "$MANAGER_BIN"; do
   [[ ! -L $path ]] || { err "$(L '管理脚本是符号链接，拒绝覆盖' 'Refusing manager symlink')"; return 1; }
@@ -22,13 +22,14 @@ manager_update_apply(){
   fi
  done
  bash -n "$candidate" && [[ $(bash "$candidate" --self-check) == "$version" ]] || return 1
- users_guard && argo_guard || return 1
+ users_guard && argo_guard && online_guard || return 1
  mkdir -m 700 "$snapshot" || return 1
  for path in "${targets[@]}"; do
   if [[ -f $path ]]; then cp -p "$path" "$snapshot/$(basename "$path")" || return 1; fi
  done
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service; then active=true; users_stop || return 1; fi
  if [[ -f $BASE/argo-state.json ]] && systemctl is-active --quiet skybyte-argo-tunnel.service; then tunnel=true; systemctl stop skybyte-argo-tunnel.service || { [[ $active != true ]] || users_start; return 1; }; fi
+ if [[ -f $BASE/subscriptions.json ]] && systemctl is-active --quiet skybyte-subscriptions.service;then subscriptions=true;systemctl stop skybyte-subscriptions.service || { [[ $active != true ]] || users_start;[[ $tunnel != true ]] || systemctl start skybyte-argo-tunnel.service;return 1; };fi
  for path in "${targets[@]}"; do
   mkdir -p "$(dirname "$path")" || { rc=1; break; }
   # Rename within the target filesystem, including when the running script is replaced.
@@ -37,14 +38,17 @@ manager_update_apply(){
  done
  if [[ $rc == 0 && $active == true ]]; then systemctl start skybyte-users.service && systemctl is-active --quiet skybyte-users.service || rc=1; fi
  if [[ $rc == 0 && $tunnel == true ]]; then systemctl start skybyte-argo-tunnel.service && systemctl is-active --quiet skybyte-argo-tunnel.service || rc=1; fi
+ if [[ $rc == 0 && $subscriptions == true ]];then systemctl start skybyte-subscriptions.service && systemctl is-active --quiet skybyte-subscriptions.service || rc=1;fi
  if [[ $rc != 0 ]]; then
   [[ $active != true ]] || systemctl stop skybyte-users.service || :
   [[ $tunnel != true ]] || systemctl stop skybyte-argo-tunnel.service || :
+  [[ $subscriptions != true ]] || systemctl stop skybyte-subscriptions.service || :
   for path in "${targets[@]}"; do
    if [[ -f $snapshot/$(basename "$path") ]]; then command install -m 700 "$snapshot/$(basename "$path")" "$path" || return 1; else rm -f "$path"; fi
   done
   [[ $active != true ]] || systemctl start skybyte-users.service || :
   [[ $tunnel != true ]] || systemctl start skybyte-argo-tunnel.service || :
+  [[ $subscriptions != true ]] || systemctl start skybyte-subscriptions.service || :
   err "$(L '管理脚本更新失败，已回滚脚本' 'Manager update failed; script copies rolled back')"; return 1
  fi
  ok "$(L '管理脚本更新完成：' 'Manager updated: ')v$version"

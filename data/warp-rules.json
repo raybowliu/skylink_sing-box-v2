@@ -1,0 +1,42 @@
+{
+  "owner": "SKYBYTE WARP rules v1",
+  "schema": 1,
+  "version": "2026.10.13",
+  "media": [
+    "netflix.com",
+    "netflix.net",
+    "nflxext.com",
+    "nflximg.com",
+    "nflximg.net",
+    "nflxso.net",
+    "nflxvideo.net",
+    "disneyplus.com",
+    "disney-plus.net",
+    "dssott.com",
+    "bamgrid.com",
+    "youtube.com",
+    "youtu.be",
+    "googlevideo.com",
+    "ytimg.com",
+    "youtubei.googleapis.com",
+    "primevideo.com",
+    "amazonvideo.com",
+    "aiv-cdn.net",
+    "aiv-delivery.net",
+    "tiktok.com",
+    "tiktokv.com",
+    "tiktokcdn.com",
+    "tiktokcdn-us.com",
+    "byteoversea.com",
+    "ibytedtos.com"
+  ],
+  "ai": [
+    "openai.com",
+    "chatgpt.com",
+    "oaistatic.com",
+    "oaiusercontent.com",
+    "anthropic.com",
+    "claude.ai",
+    "claude.com"
+  ]
+}

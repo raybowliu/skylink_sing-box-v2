@@ -113,10 +113,12 @@ def cleanup():
 class NoControllerRedirect(urllib.request.HTTPRedirectHandler):
  def redirect_request(self,*args,**kwargs):return None
 
+_api_local=__import__('threading').local()
 def api(u):
+ if not hasattr(_api_local,'opener'):_api_local.opener=urllib.request.build_opener(urllib.request.ProxyHandler({}),NoControllerRedirect())
  request=urllib.request.Request('http://127.0.0.1:'+str(u['api_port'])+'/connections',headers={'Authorization':'Bearer '+u['api_secret']})
  # Ignore proxy environment; credentials go only to the loopback controller.
- with urllib.request.build_opener(urllib.request.ProxyHandler({}),NoControllerRedirect()).open(request,timeout=.8) as response:
+ with _api_local.opener.open(request,timeout=.8) as response:
   payload=response.read(2*1024*1024+1)
   require(len(payload)<=2*1024*1024)
   d=json.loads(payload)
@@ -161,7 +163,7 @@ def watch():
      try:samples[uid]=f.result(timeout=2)
      except Exception as exc:samples[uid]=failure_reason(exc)
     with lock():
-     d=read();records={u['id']:u for u in d['users']}
+     d=read();before=copy.deepcopy(d);records={u['id']:u for u in d['users']}
      for uid,child in list(children.items()):
       u=records.get(uid)
       if child['log'].tell()>1048576:child['log'].seek(0);child['log'].truncate(0)
@@ -188,7 +190,7 @@ def watch():
       proc=subprocess.Popen([binary,'run','-c',str(p/'server.json')],stdout=log,stderr=log)
       children[uid]={'proc':proc,'log':log,'start':time.monotonic(),'ready':False,'generation':secrets.token_hex(16)}
       u['running']=False;u['pid']=proc.pid
-     atomic(db,d)
+     if d!=before:atomic(db,d)
     for _ in range(10):
      if stopping:break
      time.sleep(.1)

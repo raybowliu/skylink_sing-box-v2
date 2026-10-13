@@ -5,7 +5,7 @@ PY_WARP
 }
 warp_guard(){
  local file unit=$SYSTEMD_DIR/skybyte-warp-gateway.service
- for file in warp-state.json warp-gateway.json warp-client.json; do [[ ! -L $BASE/$file ]] || return 1; done
+ for file in warp-state.json warp-gateway.json warp-client.json warp-rules.json warp-rules.previous.json; do [[ ! -L $BASE/$file ]] || return 1; done
  if [[ -e $unit || -L $unit ]]; then
   if [[ -L $unit ]] || ! grep -Fxq 'Description=SKYBYTE managed WARP gateway' "$unit" || ! grep -Fxq "ExecStart=$BIN run -c $BASE/warp-gateway.json" "$unit"; then err "$(L 'WARP 网关归属异常' 'WARP gateway ownership mismatch')"; return 1; fi
  fi
@@ -213,10 +213,10 @@ warp_menu(){
  check_owned && warp_guard || return 1
  local choice port udp domains mode
  warp_engine status
- prompt_options '1 安装官方 WARP  2 使用现有本机代理  3 导入 WireGuard 配置  4 切换分流  5 双栈检测  6 流媒体检测  0 返回' '1 Install official WARP  2 Existing local proxy  3 Import WireGuard profile  4 Routing mode  5 Dual-stack tests  6 Media tests  0 Back'
+ prompt_options '1 安装官方 WARP  2 使用现有本机代理  3 导入 WireGuard 配置  4 切换分流  5 双栈检测  6 流媒体检测  7 分流规则管理  0 返回' '1 Install official WARP  2 Existing local proxy  3 Import WireGuard profile  4 Routing mode  5 Dual-stack tests  6 Media tests  7 Rule catalog  0 Back'
  prompt_read '> ' choice || return 0
  case $choice in
-  1) warp_install_client;; 3) warp_import_gateway;; 5) warp_dualstack;; 6) media_check;;
+  1) warp_install_client;; 3) warp_import_gateway;; 5) warp_dualstack;; 6) media_check;; 7) warp_rules_menu;;
   2)
    prompt_read "$(L '已有本机 WARP SOCKS5 端口 [40000]：' 'Existing local WARP SOCKS5 port [40000]: ')" port || return 0; port=${port:-40000}
    valid_port "$port" && warp_loopback "$port" && warp_verify "$port" || return 1
@@ -237,4 +237,37 @@ warp_menu(){
    confirm "$(L '应用出站模式并短暂重启运行中的节点？' 'Apply routing and briefly restart active nodes?')" && warp_switch "$mode" "$port" "$udp" "$domains";;
   0) return 0;; *) return 1;;
  esac
+}
+
+warp_rules_menu(){
+ warp_guard || return 1
+ local choice domains port udp
+ warp_engine catalog_status || return 1
+ prompt_options '1 查看当前出口  2 手动更新规则列表  3 将当前规则用于受限域名分流  0 返回' '1 Verify current egress  2 Update catalog manually  3 Apply catalog to restricted routing  0 Back'
+ prompt_read '> ' choice || return 0
+ case $choice in
+  1) port=$(warp_engine port) && warp_loopback "$port" && warp_verify "$port";;
+  2) confirm "$(L '从 SKYBYTE 正式 Release 下载并验证规则列表？已有自定义分流不会改变。' 'Download/digest-verify the catalog from a SKYBYTE release? Custom routing remains unchanged.')" && warp_rules_update;;
+  3) domains=$(warp_engine defaults) && port=$(warp_engine port) || return 1
+   udp=$(python3 -c 'import json,sys;print(str(json.load(open(sys.argv[1]))["udp"]).lower())' "$BASE/warp-state.json") || return 1
+   confirm "$(L '替换受限域名列表并重启原先运行的节点？' 'Replace restricted suffixes and restart previously active nodes?')" && warp_switch restricted "$port" "$udp" "$domains";;
+  0) return 0;;*) return 1;;
+ esac
+}
+warp_rules_update(){
+ local tmp digest version
+ tmp=$(mktemp -d "$BASE/rules-update.XXXXXX") || return 1
+ if ! curl -q -fsSL --proto '=https' --max-time 25 --max-filesize 1048576 https://api.github.com/repos/skylink9119/sing-box-v2/releases/latest -o "$tmp/release.json";then rm -rf "$tmp";return 1;fi
+ version=$(python3 - "$tmp/release.json" <<'PY_RULE_RELEASE'
+import json,re,sys
+r=json.load(open(sys.argv[1]));assert not r.get('draft') and not r.get('prerelease');v=r['tag_name'];assert re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+',v);print(v)
+PY_RULE_RELEASE
+ ) || { rm -rf "$tmp";return 1; }
+ digest=$(python3 - "$tmp/release.json" <<'PY_RULE_DIGEST'
+import json,re,sys
+r=json.load(open(sys.argv[1]));a=next(a for a in r['assets'] if a['name']=='warp-rules.json');d=a.get('digest','');assert re.fullmatch('sha256:[a-fA-F0-9]{64}',d);print(d[7:])
+PY_RULE_DIGEST
+ ) || { rm -rf "$tmp";err "$(L '发布尚无可验证规则资产，保留原列表' 'Release has no verifiable catalog asset; current catalog retained')";return 1; }
+ if ! curl -q -fsSL --proto '=https' --max-time 25 --max-filesize 65536 "https://github.com/skylink9119/sing-box-v2/releases/download/$version/warp-rules.json" -o "$tmp/rules.json" || ! printf '%s  %s\n' "$digest" "$tmp/rules.json" | sha256sum -c - >/dev/null;then rm -rf "$tmp";return 1;fi
+ warp_engine catalog_update "$tmp/rules.json";local rc=$?;rm -rf "$tmp";return "$rc"
 }

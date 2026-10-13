@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Build the self-contained installer payload from reviewable source modules."""
 import argparse
+import ast
+import json
 from pathlib import Path
 import re
 
@@ -22,6 +24,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--check', action='store_true')
     args = parser.parse_args()
+    catalog=json.loads((ROOT/'data/warp-rules.json').read_text())
+    tree=ast.parse((ROOT/'src/warp.py').read_text())
+    values={node.targets[0].id:ast.literal_eval(node.value) for node in tree.body if isinstance(node,ast.Assign) and isinstance(node.targets[0],ast.Name) and node.targets[0].id in ('MEDIA','AI','RULE_VERSION')}
+    if catalog['media']!=values['MEDIA'] or catalog['ai']!=values['AI'] or catalog['version']!=values['RULE_VERSION']:parser.exit(1,'WARP catalog and source defaults differ\n')
     result = assemble('manager.sh')
     target = ROOT / 'singbox-v2.sh'
     if args.check:

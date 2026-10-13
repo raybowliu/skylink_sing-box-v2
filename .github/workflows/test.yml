@@ -16,7 +16,7 @@ jobs:
       - name: Install test tools
         run: |
           apt-get update
-          apt-get install -y bash curl ca-certificates git python3 python3-yaml openssl shellcheck perl gnupg
+          apt-get install -y bash curl ca-certificates git python3 python3-yaml openssl shellcheck perl gnupg certbot python3-certbot-dns-cloudflare
       - uses: actions/checkout@v4
       - name: Bash syntax and ShellCheck
         run: |
@@ -36,6 +36,12 @@ jobs:
           warp-cli mode --help
           warp-cli proxy port --help
           warp-cli registration new --help
+      - name: Verify packaged Certbot plugin schemas (no issuance)
+        shell: bash
+        run: |
+          certbot certonly --help standalone
+          certbot certonly --help dns-cloudflare
+          certbot renew --help
       - name: Download pinned protocol engines
         shell: bash
         run: |
@@ -50,3 +56,12 @@ jobs:
         shell: bash
         run: |
           SING_BOX_BIN="$PWD/work/tools/sing-box" MIHOMO_BIN="$PWD/work/tools/mihomo" python3 -m unittest discover -s tests -v
+      - name: Disposable real account scaling benchmark (idle, loopback only)
+        shell: bash
+        run: |
+          SING_BOX_BIN="$PWD/work/tools/sing-box" python3 scripts/benchmark_users.py --engine "$PWD/work/tools/sing-box" --counts 10,30,50 --output work/account-benchmark.json
+      - name: Upload credential-free benchmark results
+        uses: actions/upload-artifact@v4
+        with:
+          name: account-benchmark-${{ strategy.job-index }}
+          path: work/account-benchmark.json

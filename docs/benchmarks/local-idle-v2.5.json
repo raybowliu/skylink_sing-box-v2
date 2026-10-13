@@ -1,0 +1,34 @@
+{
+  "platform": "Darwin arm64",
+  "core": "sing-box version 1.14.3",
+  "scope": "Real HY2 account cores, loopback-only; idle capacity snapshot, not throughput or billing accuracy",
+  "results": [
+    {
+      "accounts": 10,
+      "ready_seconds": 1.151,
+      "sample_age_max_seconds": 0.934,
+      "processes_observed": 11,
+      "rss_mib": 488.016,
+      "cpu_percent_snapshot": 0.1,
+      "traffic_load": "idle controllers, no client payload"
+    },
+    {
+      "accounts": 30,
+      "ready_seconds": 1.25,
+      "sample_age_max_seconds": 0.881,
+      "processes_observed": 31,
+      "rss_mib": 1400.797,
+      "cpu_percent_snapshot": 0.2,
+      "traffic_load": "idle controllers, no client payload"
+    },
+    {
+      "accounts": 50,
+      "ready_seconds": 1.387,
+      "sample_age_max_seconds": 0.824,
+      "processes_observed": 51,
+      "rss_mib": 2311.25,
+      "cpu_percent_snapshot": 0.5,
+      "traffic_load": "idle controllers, no client payload"
+    }
+  ]
+}
