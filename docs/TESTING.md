@@ -153,3 +153,9 @@ The HTTPS probe validates reachability and reports the observed landing egress I
 Relay menu option 6 displays a Chinese/English guide before landing-profile export or staging. The existing menu regression now opens the guide before any landing has been imported, checks that all fixture files remain byte-for-byte unchanged, then repeats with a saved landing and verifies unchanged routing/state and no landing password in output. This regression and the generated-bundle/rootless self-check test passed locally. Both guides were inspected after rendering to terminal text; Bash syntax, ShellCheck and build consistency passed.
 
 The guide covers entry/landing roles, hidden URI input, trusted public certificate transfer, fingerprint comparison, activation, client node selection and direct restoration. README installation/development commands run as root without sudo, matching the installer's existing root requirement.
+
+## V2.6.2 clearer two-server relay instructions
+
+The Chinese and English option-6 guides now identify A (entry server) and B (residential exit), require a working node on each, and explain five steps with the exact server and menu to use. Public certificate transfer and fingerprint commands follow the basic steps. Both README files use the same walkthrough and retain certificate verification, direct-exit and routing constraints.
+
+The existing bilingual menu/privacy regression and bundle/rootless self-check regression passed locally. Both guides were rendered and inspected as terminal text. Bash syntax passed for all 16 shell files; ShellCheck 0.11.0, generated-bundle consistency and git diff whitespace checks passed. This change updates displayed help and the manager version; it does not alter import, forwarding or routing behavior.
