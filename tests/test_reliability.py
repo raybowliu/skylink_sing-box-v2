@@ -281,3 +281,8 @@ download_binary(){ cp '''+shlex.quote(manager.SB)+''' "$2";chmod 755 "$2"; }
   self.configure();cfg=json.loads((self.config/'config.json').read_text());cfg['inbounds'][0]['listen_port']=24443;cfg['inbounds'][1]['listen_port']=34443;(self.config/'config.json').write_text(json.dumps(cfg))
   r=self.shell('systemctl(){ :; };ss(){ echo "$*"; };nft(){ :; };firewall_audit(){ :; };status')
   self.assertIn('sport = :24443',r.stdout);self.assertIn('sport = :34443',r.stdout);self.assertNotIn('sport = :443',r.stdout)
+ def test_zero_exit_openssl_identity_mismatch_is_rejected(self):
+  self.configure('2');before=(self.config/'config.json').read_bytes();exe=self.root/'fake-openssl'
+  exe.write_text('#!/bin/sh\ncase "$*" in *-checkhost*|*-checkip*) echo "Hostname does NOT match certificate";;esac\nexit 0\n');exe.chmod(0o700)
+  code='export OPENSSL_BIN='+shlex.quote(str(exe))+';'+self.inactive()+'configuration_apply tls wrong.example '+shlex.quote(str(self.cert))+' '+shlex.quote(str(self.key))
+  self.assertNotEqual(self.shell(code,ok=False).returncode,0);self.assertEqual(before,(self.config/'config.json').read_bytes())

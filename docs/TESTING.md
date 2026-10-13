@@ -126,7 +126,7 @@ CI additionally installs the official Cloudflare signed package on Ubuntu 24.04 
 
 ## V2.5 reliability, certificates and private subscriptions
 
-The final suite contains 166 cases, including missing-state restoration rollback, custom-port firewall allowance and listener status. Local macOS skips only the GnuPG case; Linux CI runs it with the distribution package.
+The final suite contains 167 cases, including missing-state restoration rollback, custom-port firewall allowance and listener status. Local macOS skips only the GnuPG case; Linux CI runs it with the distribution package.
 
 The suite adds installation staging/exclusive commits/rollback/retry, preservation of files created concurrently, admin/user port/address/SNI edits, invalid/conflicting settings, multi-file restart rollback, protocol add/remove with unchanged credentials/ledgers, automatic self-signed HY2 addition and real engine validation of bandwidth/Salamander exports. It checks tested/latest/specified version selection, ownership guards, isolated Certbot HTTP/DNS flags, hidden token-file privacy, failed/successful issuance, opt-in owned renewal timers and failed renewal preserving current certificates.
 

@@ -113,8 +113,10 @@ else:raise ValueError('Unknown config edit')
 def tls_check(i):
  t=i['tls'];exe=os.environ.get('OPENSSL_BIN','openssl');cert=t['certificate_path'];key=t['key_path'];name=t['server_name']
  identity='-checkip' if ':' in name or re.fullmatch(r'[0-9.]+',name) else '-checkhost'
- for command in ([exe,'x509','-in',cert,'-noout','-checkend','0'],[exe,'x509','-in',cert,'-noout',identity,name]):
-  if subprocess.run(command,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:raise ValueError('Certificate expired or identity mismatched')
+ if subprocess.run([exe,'x509','-in',cert,'-noout','-checkend','0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL).returncode:raise ValueError('Certificate invalid or expired')
+ # Older OpenSSL releases may exit zero even when checkhost/checkip does not match.
+ result=subprocess.run([exe,'x509','-in',cert,'-noout',identity,name],stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,env={**os.environ,'LC_ALL':'C'})
+ if result.returncode or b'does match' not in result.stdout:raise ValueError('Certificate identity mismatched')
  certpub=subprocess.check_output([exe,'x509','-in',cert,'-pubkey','-noout'],stderr=subprocess.DEVNULL)
  keypub=subprocess.check_output([exe,'pkey','-in',key,'-pubout','-passin','pass:'],stderr=subprocess.DEVNULL)
  if certpub!=keypub:raise ValueError('Certificate/key mismatch')
