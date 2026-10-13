@@ -3421,7 +3421,7 @@ Persistent=true
 [Install]
 WantedBy=timers.target
 UNIT
- certificate_identity >/dev/null 2>&1 && certificate_check || :
+ if certificate_identity >/dev/null 2>&1;then certificate_check || return 1;fi
  systemctl daemon-reload && systemctl enable --now skybyte-acme.timer
 }
 acme_menu(){
