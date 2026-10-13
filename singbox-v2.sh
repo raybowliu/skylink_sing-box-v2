@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.8.0
+MANAGER_VERSION=2.8.1
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -93,7 +93,7 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：受限网络部署（1 → 6）、独立 Argo、IPv6/NAT、WARP 双栈与详细流媒体检测' 'Features: restricted-network deployment (1 → 6), standalone Argo, IPv6/NAT, WARP dual-stack and detailed media probes'
+ say '功能更新：受限网络部署（1 → 6）、独立 Argo、IPv6/NAT、WARP 双栈与流媒体地区线索识别' 'Features: restricted-network deployment (1 → 6), standalone Argo, IPv6/NAT, WARP dual-stack and media region clues'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
@@ -2269,7 +2269,7 @@ UNIT
 media_check(){
  require_cmd curl && require_cmd python3 || return 1
  local selection paths port=''
- say '检测匿名服务页面和地区提示；没有登录或实际播放验证。HTTP 200 不代表已解锁。' 'Checks anonymous pages/region hints, without login or playback verification. HTTP 200 does not mean unlocked.'
+ say '识别匿名页面中的地区字段、页面区域提示和明确地区限制；不登录账号、不验证订阅资格或实际播放。HTTP 200 仅表示页面有响应。' 'Reads region fields, page locale hints and explicit location restrictions from anonymous pages. No account login, subscription check or playback test; HTTP 200 only means the page responded.'
  prompt_options '1 直连 IPv4  2 直连 IPv6  3 两者  4 WARP  5 IPv4 与 WARP 对比  0 返回' '1 Direct IPv4  2 Direct IPv6  3 Both  4 WARP  5 IPv4/WARP comparison  0 Back'
  prompt_read '> ' selection || return 0
  case $selection in 1) paths=4;; 2) paths=6;; 3) paths=4,6;; 4) paths=warp;; 5) paths=4,warp;; 0) return 0;; *) return 1;; esac
@@ -2278,6 +2278,7 @@ media_check(){
 """Anonymous service-page probes; evidence is never a playback guarantee."""
 import concurrent.futures
 import datetime
+import html
 import json
 import os
 from pathlib import Path
@@ -2302,6 +2303,24 @@ LABELS={
  'network':('连接/DNS/TLS失败；解锁未知','Connection/DNS/TLS failed; unlock unknown'),
  'changed':('响应异常或页面变化；解锁未知','Unexpected response/page changed; unlock unknown')}
 
+# These fields are page-provided hints, not proof of account eligibility or playback.
+REGION_FIELDS={
+ 'Netflix':(('requestCountry','id'),('countryCode',),('country_code',)),
+ 'Disney+':(('countryCode',),('country_code',),('currentTerritory',),('territory',),('regionCode',)),
+ 'YouTube Premium':(('countryCode',),('country_code',),('gl',)),
+ 'Amazon Prime Video':(('currentTerritory',),('territory',),('countryCode',),('country_code',)),
+ 'TikTok':(('store_region',),('countryCode',),('country_code',),('region',))}
+REGION_NAMES={
+ 'AU':('澳大利亚','Australia'),'BR':('巴西','Brazil'),'CA':('加拿大','Canada'),
+ 'DE':('德国','Germany'),'ES':('西班牙','Spain'),'FR':('法国','France'),
+ 'GB':('英国','United Kingdom'),'HK':('香港','Hong Kong'),'ID':('印度尼西亚','Indonesia'),
+ 'IN':('印度','India'),'IT':('意大利','Italy'),'JP':('日本','Japan'),
+ 'KR':('韩国','South Korea'),'MX':('墨西哥','Mexico'),'MY':('马来西亚','Malaysia'),
+ 'NL':('荷兰','Netherlands'),'PH':('菲律宾','Philippines'),'RU':('俄罗斯','Russia'),
+ 'SC':('塞舌尔','Seychelles'),'SG':('新加坡','Singapore'),'TH':('泰国','Thailand'),
+ 'TR':('土耳其','Türkiye'),'TW':('台湾','Taiwan'),'US':('美国','United States'),
+ 'VN':('越南','Vietnam')}
+
 def fetch(url,path='4',port=None,post=False):
     # Ignore curlrc/proxy environment. No login cookies, authorization or node data.
     with tempfile.TemporaryDirectory() as tmp:
@@ -2323,39 +2342,95 @@ def fetch(url,path='4',port=None,post=False):
         return {'error':r.returncode!=0,'code':code,'body':text,'url':lines[1] if len(lines)>1 else url}
 
 def country(text,key):
-    m=re.search(r'"'+re.escape(key)+r'"\s*:\s*"([A-Za-z]{2})"',text)
+    # Handle both literal JSON and JSON strings embedded with escaped quotes.
+    quote=r'(?:\\)?["\']'
+    m=re.search(quote+re.escape(key)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote,text)
     return m[1].upper() if m else '-'
 
+def url_region(response):
+    url=response.get('url','')
+    try:parsed=urllib.parse.urlsplit(url)
+    except ValueError:return '-',''
+    query=urllib.parse.parse_qs(parsed.query)
+    for key in ('country','countryCode','region','gl'):
+        for value in query.get(key,[]):
+            if re.fullmatch('[A-Za-z]{2}',value):return value.upper(),'final URL '+key
+    # Locale paths identify the page's selected territory, not necessarily the egress IP.
+    match=re.search(r'(?:^|/)[a-z]{2}-([a-z]{2})(?:/|$)',parsed.path,re.I)
+    if match:return match[1].upper(),'final URL locale'
+    return '-',''
+
+def region_hint(service,responses):
+    hints=[]
+    for response in responses:
+        body=html.unescape(response.get('body',''))
+        found=False
+        for fields in REGION_FIELDS.get(service,()):
+            if len(fields)==2:
+                parent,child=fields
+                quote=r'(?:\\)?["\']'
+                pattern=quote+re.escape(parent)+quote+r'\s*:\s*\{.{0,512}?'+quote+re.escape(child)+quote+r'\s*:\s*'+quote+r'([A-Za-z]{2})'+quote
+                match=re.search(pattern,body,re.S)
+                value=match[1].upper() if match else '-'
+                source=parent+'.'+child
+            else:
+                source=fields[0];value=country(body,source)
+            if value!='-':
+                hints.append((value,source))
+                found=True
+        if not found:
+            value,source=url_region(response)
+            if value!='-':hints.append((value,source))
+    # Preserve conflicting provider hints instead of silently choosing one.
+    values=list(dict.fromkeys(value for value,_ in hints))
+    sources=list(dict.fromkeys(source for _,source in hints))
+    return '/'.join(values) if values else '-',', '.join(sources)
+
+def region_label(region,language):
+    if region=='-':return '未识别' if language=='zh_CN' else 'not identified'
+    names=[]
+    for code in region.split('/'):
+        name=REGION_NAMES.get(code)
+        names.append((name[0] if language=='zh_CN' else name[1])+' ('+code+')' if name else code)
+    return '/'.join(names)
+
+def location_restricted(service,body):
+    low=body.lower()
+    messages={
+        'Netflix':('not available to watch in your area','this title is not available in your country'),
+        'Disney+':(),
+        'YouTube Premium':('premium is not available in your country',),
+        'Amazon Prime Video':('this video is currently unavailable to watch in your location',),
+        'TikTok':('this content is not available in your region','not available in your region')}
+    return any(phrase in low for phrase in messages.get(service,()))
+
+def json_boolean(text,key):
+    quote=r'(?:\\)?["\']'
+    match=re.search(quote+re.escape(key)+quote+r'\s*:\s*(true|false)',text,re.I)
+    return match[1].lower() if match else None
+
+def status_color(status):
+    if status in ('catalog','offer','supported'):return '\033[1;32m'
+    if status in ('restricted','network','changed'):return '\033[1;31m'
+    return '\033[1;33m'
+
 def classify(service,responses):
-    region='-';main=responses[0];body=main['body'];low=body.lower()
-    result={'service':service,'status':'unknown','region':region,'http_code':main['code']}
+    main=responses[0];body=main['body'];low=body.lower()
+    region,region_source=region_hint(service,responses)
+    result={'service':service,'status':'unknown','region':region,'region_source':region_source,'http_code':main['code']}
     if main['error']:result['status']='network';return result
     if main['code'] in (401,403,429,451) or any(x in low for x in ['verify you are human','cf-chl-','robot check','unusual traffic']):
         result['status']='verification';return result
     if main['code']!=200:result['status']='changed';return result
+    if location_restricted(service,body):result['status']='restricted';return result
     if service=='Netflix':
-        m=re.search(r'"requestCountry"\s*:\s*\{\s*"id"\s*:\s*"([A-Za-z]{2})"',body)
-        result['region']=m[1].upper() if m else '-'
         if any(not r['error'] and r['code']==200 and re.search(r'<meta\b[^>]*(?:property|name)=["\']og:video',r['body'],re.I) for r in responses):result['status']='catalog'
     elif service=='Disney+':
-        result['region']=country(body,'countryCode')
-        if re.search(r'"inSupportedLocation"\s*:\s*false',body) or '/unavailable' in urllib.parse.urlsplit(main['url']).path:
+        if json_boolean(body,'inSupportedLocation')=='false' or '/unavailable' in urllib.parse.urlsplit(main['url']).path:
             result['status']='restricted'
-        elif re.search(r'"inSupportedLocation"\s*:\s*true',body):result['status']='supported'
+        elif json_boolean(body,'inSupportedLocation')=='true':result['status']='supported'
     elif service=='YouTube Premium':
-        result['region']=country(body,'countryCode')
-        if 'premium is not available in your country' in low:result['status']='restricted'
-        elif 'purchaseButtonOverride' in body or 'start trial' in low:result['status']='offer'
-    elif service=='Amazon Prime Video':
-        result['region']=country(body,'currentTerritory')
-        if 'this video is currently unavailable to watch in your location' in low:result['status']='restricted'
-    elif service=='TikTok':
-        if len(responses)>1 and not responses[1]['error'] and responses[1]['code']==200:
-            try:
-                region=json.loads(responses[1]['body'])['data']['store_region']
-                if re.fullmatch('[A-Za-z]{2}',region):result['region']=region.upper()
-            except (ValueError,KeyError,TypeError):pass
-        if 'not available in your region' in low:result['status']='restricted'
+        if 'purchaseButtonOverride' in body or 'start trial' in low:result['status']='offer'
     return result
 
 def probe(service,path,port):
@@ -2372,9 +2447,11 @@ def run(paths,report,port=None,language='zh_CN'):
             rows=list(pool.map(lambda s:probe(s,path,port),PROBES))
         for row in rows:
             row['path']=path;results.append(row)
-            color='\033[1;32m' if row['status'] in ('catalog','offer','supported') else '\033[1;33m'
+            color=status_color(row['status'])
             if not __import__('sys').stdout.isatty() or os.environ.get('NO_COLOR'):color=''
-            print(color+row['service']+' | '+LABELS[row['status']][int(en)]+' | '+('Region hint: ' if en else '页面地区提示：')+row['region']+' | HTTP '+str(row['http_code'])+('\033[0m' if color else ''))
+            region=region_label(row['region'],language)
+            source=(' ('+row['region_source']+')') if row.get('region_source') else ''
+            print(color+row['service']+' | '+LABELS[row['status']][int(en)]+' | '+('Page region clue: ' if en else '页面识别地区线索：')+region+source+' | HTTP '+str(row['http_code'])+('\033[0m' if color else ''))
     report=Path(report);report.mkdir(exist_ok=True,mode=0o700)
     if report.is_symlink():raise ValueError('Report directory is a symlink')
     fd,tmp=tempfile.mkstemp(prefix='media-',suffix='.json',dir=report)

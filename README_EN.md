@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.8.0 — sing-box Installer and Ubuntu/Debian VPS Management
+# SKYBYTE Manager V2.8.1 — sing-box Installer and Ubuntu/Debian VPS Management
 
 **SKYBYTE Manager** is a Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces. It installs sing-box with **VLESS + Reality + Vision, Hysteria2 (HY2), or both protocols**, manages Cloudflare Argo tunnels and WARP routing, and provides per-user traffic quotas and expiry. Client exports support Shadowrocket, v2rayN, Clash Verge/Mihomo/OpenClash and sing-box JSON.
 
@@ -214,9 +214,9 @@ Backups include routing, private gateway configuration and owned units. Restore 
 
 ## Streaming availability tests (V2.4)
 
-Open **4 → 8** for Netflix, Disney+, YouTube Premium, Amazon Prime Video and TikTok. Choose direct IPv4, direct IPv6, WARP or an IPv4/WARP comparison. Anonymous official-page requests use verified TLS, bounded timeouts/body sizes, no account login or cookies, and no remote third-party scripts.
+Open **4 → 8** for Netflix, Disney+, YouTube Premium, Amazon Prime Video and TikTok. Choose direct IPv4, direct IPv6, WARP or an IPv4/WARP comparison. Anonymous official-page requests identify country/region fields, final-page locale hints and explicit location restrictions; the output names the field source and reports missing or conflicting clues. Requests use verified TLS, bounded timeouts/body sizes, no account login or cookies, and no remote third-party scripts.
 
-Results distinguish region hints, explicit location restrictions, catalog/subscription metadata and connection failure. HTTP 200 does not establish full catalog or playback access. Denials, rate limits, challenges and changed pages remain unknown rather than being mislabeled as blocked. Login, payment eligibility, actual playback and AI-account availability are not tested. Proxy tests use remote DNS and do not claim a particular egress address family.
+Results distinguish page region clues, explicit location restrictions, catalog/subscription offers and connection failures. A page field or URL locale is only a clue; it does not prove the VPS egress country, a full catalog or playback. HTTP 200 confirms only a page response, not unlocking. 403/429, challenges and changed pages remain unknown rather than being reported as blocked. No account login, payment eligibility or playback validation is performed; AI account availability is not tested. WARP uses proxy-side DNS and does not claim a specific egress address family.
 
 Private reports contain classifications, region hints and HTTP codes, at `/etc/singbox-v2/reports/media-*.json`, mode 600. Raw pages and node credentials are excluded. Probes run on demand without background jobs. WARP and each user core add resource usage; **4 → 7** shows process/memory/load snapshots, without a fixed account-capacity promise.
 
@@ -268,7 +268,7 @@ Restore retains current account policy/usage and current subscription tokens. HT
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.7.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.8.1
 ```
 
 Packaging includes only install.sh, the full bundle, public rule catalog and SHA256SUMS, never runtime state or credentials.
