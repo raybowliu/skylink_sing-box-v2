@@ -12,7 +12,7 @@ SKYBYTE Manager — quick guide
 8. Backup: main 5 → 2 creates a backup; 3 restores it; 7 lists/preflights/encrypts/imports or explicitly prunes old backups. Backups contain keys. Restore keeps current usage/policies and current subscription tokens.
 9. Versions: main 5 → 1 selects this release's tested core, latest stable or a specific version/downgrade. Every managed config must validate; weekly auto-update remains removed.
 10. Resources: main 4 → 7. Each account uses a core. Capacity depends on measured memory/CPU/traffic. Account quotas are periodically enforced, not byte-exact billing.
-11. Residential landing / VPS relay: main 4 → 10. Import one Reality/Vision or HY2 landing URI/JSON. Clients connect to this VPS and destinations see the landing exit. Self-signed HY2 requires trusted public certificate material. Relay and WARP are alternative routing policies; failed relay traffic has no automatic direct fallback. Measure both links before judging speed.
+11. Residential landing / VPS relay: main 4 → 10, then 6 for step-by-step help. Import one Reality/Vision or HY2 landing URI/JSON. Clients connect to this VPS and destinations see the landing exit. Self-signed HY2 requires trusted public certificate material. Relay and WARP are alternative routing policies; failed relay traffic has no automatic direct fallback. Measure both links before judging speed.
 CLI: --help, --self-check. Maintenance flags are used by owned systemd services.
 HELP_EN
  else cat <<'HELP_ZH'
@@ -27,7 +27,7 @@ SKYBYTE Manager — 快速使用说明
 8. 备份：主菜单5 → 2新建、3恢复、7列表/预检/加密导出/导入/确认清理旧备份。备份含私钥。恢复保留当前用量、策略和当前订阅Token。
 9. 版本：主菜单5 → 1选本版测试内核、最新稳定版或指定版本/降级，须检查全部托管配置。每周自动更新保持移除。
 10. 资源：主菜单4 → 7，每个用户一个内核，容量需实测。配额周期检查，不是精确计费。
-11. 住宅落地 / VPS 中转：主菜单4 → 10，导入一个 Reality/Vision 或 HY2 落地链接/JSON。客户端连接本 VPS，网站看到落地出口。自签名 HY2 须提供可信公开证书；中转与 WARP 分流择一启用，中转失败不自动直连。速度需按两段链路实测。
+11. 住宅落地 / VPS 中转：主菜单4 → 10，再选6查看具体步骤，导入一个 Reality/Vision 或 HY2 落地链接/JSON。客户端连接本 VPS，网站看到落地出口。自签名 HY2 须提供可信公开证书；中转与 WARP 分流择一启用，中转失败不自动直连。速度需按两段链路实测。
 命令行：--help、--self-check。维护参数供本工具的 systemd 服务使用。
 HELP_ZH
  fi

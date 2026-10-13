@@ -253,7 +253,7 @@ HY2 支持上下行 Mbps、`ignore_client_bandwidth` 与 Salamander 混淆，服
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.1
 ```
 
 打包只包含安装入口、完整脚本、公开规则列表及SHA256SUMS，不发布运行时配置或凭据。
@@ -271,7 +271,7 @@ SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
 
 ## 住宅 IP 落地与 VPS 中转（V2.6）
 
-入口 **4 → 10：住宅落地 / VPS 中转**。适用于住宅 IP VPS 对大陆直连较差、希望通过另一台线路较好的 VPS 接入的场景：
+入口 **4 → 10：住宅落地 / VPS 中转**，再选 **6「使用说明」** 可查看以下操作步骤及证书复制、指纹核对命令，尚未导入落地节点时也可查看。适用于住宅 IP VPS 对大陆直连较差、希望通过另一台线路较好的 VPS 接入的场景：
 
 ```text
 国内客户端 → 中转 VPS（本脚本）→ 住宅 IP 落地 VPS → 目标网站

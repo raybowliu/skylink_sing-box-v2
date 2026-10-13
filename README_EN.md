@@ -253,7 +253,7 @@ Restore retains current account policy/usage and current subscription tokens. HT
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.1
 ```
 
 Packaging includes only install.sh, the full bundle, public rule catalog and SHA256SUMS, never runtime state or credentials.
@@ -271,7 +271,7 @@ SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
 
 ## Residential IP landing and VPS relay (V2.6)
 
-Menu **4 → 10: Residential landing / VPS relay** supports a residential-IP VPS with a poor direct route from mainland China by using an entry VPS with a better client-facing route:
+Menu **4 → 10: Residential landing / VPS relay**, then **6 Usage guide**, shows the setup steps and certificate-copy/fingerprint commands even before importing a landing node. It supports a residential-IP VPS with a poor direct route from mainland China by using an entry VPS with a better client-facing route:
 
 ```text
 Client → entry VPS (this manager) → residential landing VPS → destination
