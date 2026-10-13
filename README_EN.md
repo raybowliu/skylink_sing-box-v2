@@ -1,4 +1,4 @@
-# SKYBYTE Manager V2.5 — sing-box Installer and Ubuntu/Debian VPS Management
+# SKYBYTE Manager V2.6 — sing-box Installer and Ubuntu/Debian VPS Management
 
 **SKYBYTE Manager** is a Bash-based Ubuntu/Debian VPS manager with Simplified Chinese and English interfaces. It installs sing-box with **VLESS + Reality + Vision, Hysteria2 (HY2), or both protocols**, manages Cloudflare Argo tunnels and WARP routing, and provides per-user traffic quotas and expiry. Client exports support Shadowrocket, v2rayN, Clash Verge/Mihomo/OpenClash and sing-box JSON.
 
@@ -17,6 +17,7 @@ The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential 
 - [Account limits, traffic quotas and expiry](#account-limits-traffic-quotas-and-expiry)
 - [WARP egress and dual-stack](#warp-egress-and-dual-stack-v24)
 - [Personal HTTPS subscriptions](#independent-https-subscriptions-v25)
+- [Residential IP landing and VPS relay](#residential-ip-landing-and-vps-relay-v26)
 - [Source modules and build](#source-modules-and-build) · [Validation](#validation)
 - [FAQ](#faq) · [VPS provider affiliate links](#vps-provider-affiliate-links)
 
@@ -42,7 +43,7 @@ Fresh installation uses the official sing-box 1.14.3 binary tested for this mana
 | 1 | Install nodes | Reality / HY2 / dual; Quick / Named; node edits / protocol changes |
 | 2 | Nodes and subscriptions | Information / exports / custom names / QR codes / accounts / personal HTTPS subscriptions |
 | 3 | Services and logs | Controls / logs / Argo status |
-| 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / resources / media / WARP |
+| 4 | Server and network | Initialization / UFW / firewall / BBR / hopping / traffic / resources / media / WARP / residential landing relay |
 | 5 | Updates and backups | Core versions / backup / restore / manager updates / certificates / ACME / encrypted backups |
 | 6 | Settings and uninstall | Language / privacy / uninstall / guide |
 | 7 | Users and quotas | Accounts / usage / quota / expiry / diagnostics / resources |
@@ -171,7 +172,7 @@ Backups include policies, usage, configurations and certificates. Restore retain
 
 ## Source modules and build
 
-Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), `warp.sh`/`warp.py` (gateway/routing), `configuration.sh`/`configuration.py` (node edits), `acme.sh` (issuance), `online.sh`/`online.py` (HTTPS delivery), `reliability.sh`/`backup.py` (transactions/versions/backups) and `help.sh` (guide). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
+Edit `src/manager.sh` (base services/install), `subscriptions.sh` (exports), `users.sh` (user UI/services), `users.py` (accounting/diagnostics), `operations.sh` (updates/certificates/resources), `menu.sh` (menu/entry point), `hopping.sh` (UDP hopping), `media.sh`/`media.py` (media probes), `warp.sh`/`warp.py` (gateway/owned routing), `relay.sh` (residential landing relay), `configuration.sh`/`configuration.py` (node edits), `acme.sh` (issuance), `online.sh`/`online.py` (HTTPS delivery), `reliability.sh`/`backup.py` (transactions/versions/backups) and `help.sh` (guide). Run `python3 scripts/build.py` to produce the self-contained `singbox-v2.sh`; CI uses `--check` to reject stale bundles. Do not edit the generated bundle directly.
 
 The original `install.sh` entry remains sufficient: deployed scripts contain all modules and require no runtime module downloads. `bash singbox-v2.sh --self-check` checks embedded Python syntax and outputs the version without root. systemd/UFW operations are tested through isolated mocks; actual VPS deployment still needs verification.
 
@@ -252,7 +253,7 @@ Restore retains current account policy/usage and current subscription tokens. HT
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.5.0
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.0
 ```
 
 Packaging includes only install.sh, the full bundle, public rule catalog and SHA256SUMS, never runtime state or credentials.
@@ -267,6 +268,26 @@ Metering threads reuse their loopback HTTP clients and unchanged idle ledgers av
 SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
   --engine /path/to/sing-box --counts 10,30,50 --output /tmp/account-benchmark.json
 ```
+
+## Residential IP landing and VPS relay (V2.6)
+
+Menu **4 → 10: Residential landing / VPS relay** supports a residential-IP VPS with a poor direct route from mainland China by using an entry VPS with a better client-facing route:
+
+```text
+Client → entry VPS (this manager) → residential landing VPS → destination
+```
+
+1. Deploy **VLESS + Reality + Vision** or **Hysteria2** on the landing VPS. Its public protocol port must be reachable from the entry VPS.
+2. Keep or install the entry VPS's client-facing nodes. Through **4 → 10 → 1**, import one landing URI: standard VLESS/HY2 and this project's native Shadowrocket Reality links are supported. A sing-box JSON containing exactly one proxy outbound also works. Remote subscriptions and imported executable directives are not processed.
+3. For self-signed HY2, retrieve the public certificate over trusted SSH/SFTP, verify its fingerprint and supply the certificate file, or import JSON containing that public certificate. A `pinSHA256` URI requires matching public trust material. Insecure TLS options are rejected; never supply a server private key.
+4. **All node traffic through the landing** is the default. Alternatively, select domain suffixes while other traffic stays direct. Confirmation validates configurations and tests HTTPS forwarding/egress IP through the landing before applying. Failure leaves existing routing; success backs up and restarts previously active admin/account/Argo nodes.
+5. Clients retain their entry VPS URIs, certificate trust, names and QR codes; destinations see the landing's final egress IP. Account quotas, expiry and usage are still managed independently on the entry VPS. Landing passwords/UUIDs are not included in client exports or personal subscriptions.
+
+Controls include connection tests, global relay, direct restoration and deletion of saved landing credentials. **Landing failures do not automatically fall back to the entry VPS exit.** In selected-domain mode, unmatched traffic stays direct by choice. Explicit direct restoration exposes the entry VPS egress IP. Relay and WARP are alternative policies: selecting one replaces the other's active routing. This feature does not chain WARP or add a generic SOCKS5/HTTP upstream configuration.
+
+Existing sing-box cores handle forwarding without an extra public proxy listener or relay daemon. Imports use field allowlists and refuse unknown routing changes and obvious loops back to managed listeners. Private routing state/backups hold landing credentials and embedded public trust material; existing update/restore/uninstall workflows manage them. Verify that DNS aliases, external forwarding or multiple VPS instances cannot create a loop.
+
+**Speed depends on latency, loss and bandwidth on both links, both VPS CPUs and the residential connection's upload capacity.** Relay cannot remove landing bottlenecks. Compare real uploads/downloads and latency with direct access. The built-in check validates TCP/HTTPS reachability, not residential-IP classification, service unlocking, public UDP reachability or speed improvement. Both providers may count transferred traffic. Protocol fields follow [sing-box VLESS](https://sing-box.sagernet.org/configuration/outbound/vless/) and [sing-box Hysteria2](https://sing-box.sagernet.org/configuration/outbound/hysteria2/).
 
 ## FAQ
 

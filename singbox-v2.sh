@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.5.0
+MANAGER_VERSION=2.6.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -2317,7 +2317,7 @@ PY_MEDIA
 
 warp_engine(){
  python3 - "$BASE" "$CONF" "$BIN" "$@" <<'PY_WARP'
-"""Owned WARP routing transactions. Node credentials are never edited."""
+"""Owned WARP/landing routing transactions; client-facing node credentials stay intact."""
 import base64
 import configparser
 import copy
@@ -2328,6 +2328,12 @@ from pathlib import Path
 import re
 import subprocess
 import tempfile
+import hashlib
+import socket
+import ssl
+import time
+import urllib.parse
+import uuid
 
 OWNER='SKYBYTE WARP routing v1'
 MEDIA=['netflix.com','netflix.net','nflxext.com','nflximg.com','nflximg.net','nflxso.net','nflxvideo.net',
@@ -2336,6 +2342,166 @@ MEDIA=['netflix.com','netflix.net','nflxext.com','nflximg.com','nflximg.net','nf
 AI=['openai.com','chatgpt.com','oaistatic.com','oaiusercontent.com','anthropic.com','claude.ai','claude.com']
 RULE_VERSION='2026.10.13'
 FIELDS=('route','outbounds')
+RELAY_OWNER='SKYBYTE relay profile v1'
+
+def relay_address(value):
+    if not isinstance(value,str) or len(value)>253:raise ValueError('Invalid relay address')
+    try:return str(ipaddress.ip_address(value))
+    except ValueError:
+        if not re.fullmatch(r'(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,63}',value):raise ValueError('Invalid relay hostname')
+        return value.lower()
+
+def relay_certificate(value,check_expiry=False):
+    if not isinstance(value,str) or len(value)>65536 or 'PRIVATE KEY' in value:raise ValueError('Supply only a public relay certificate')
+    blocks=re.findall(r'-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----',value,re.S)
+    if not blocks or ''.join(value.split())!=''.join(''.join(blocks).split()):raise ValueError('Invalid public certificate PEM')
+    fingerprints=[]
+    for block in blocks:
+        der=ssl.PEM_cert_to_DER_cert(block);fingerprints.append(hashlib.sha256(der).hexdigest())
+    # Import only unexpired trust material. The live TLS probe verifies the peer/name.
+    if check_expiry:
+        with tempfile.TemporaryDirectory() as root:
+            path=Path(root)/'public.pem';path.write_text(value)
+            result=subprocess.run([os.environ.get('OPENSSL_BIN','openssl'),'x509','-in',str(path),'-noout','-checkend','0'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=10)
+            if result.returncode:raise ValueError('Relay certificate expired or invalid')
+    return blocks,fingerprints
+
+def relay_normalize(outbound):
+    if not isinstance(outbound,dict):raise ValueError('Expected one relay outbound')
+    d=copy.deepcopy(outbound);kind=d.get('type')
+    common={'type','tag','server','server_port','tls','network'}
+    allowed=common|({'uuid','flow','packet_encoding'} if kind=='vless' else {'password','obfs','up_mbps','down_mbps','server_ports','hop_interval'} if kind=='hysteria2' else set())
+    if kind not in ('vless','hysteria2') or set(d)-allowed:raise ValueError('Unsupported relay protocol or fields')
+    d['server']=relay_address(d['server']);port=d['server_port']
+    if type(port) is not int or not 1<=port<=65535:raise ValueError('Invalid relay port')
+    if 'network' in d and d['network'] not in ('tcp','udp'):raise ValueError('Invalid relay network')
+    d['tag']='skybyte-relay';tls=d.get('tls')
+    if not isinstance(tls,dict) or set(tls)-{'enabled','server_name','insecure','utls','reality','certificate','certificate_path','alpn'} or tls.get('enabled') is not True or tls.get('insecure',False) is not False:raise ValueError('Relay TLS verification must be enabled')
+    tls['server_name']=relay_address(tls.get('server_name',d['server']));tls['insecure']=False
+    if 'alpn' in tls and (not isinstance(tls['alpn'],list) or not tls['alpn'] or any(x not in ('h2','http/1.1','h3') for x in tls['alpn'])):raise ValueError('Unsupported relay ALPN')
+    if 'certificate_path' in tls:raise ValueError('Embed public trust certificate; external certificate paths are not imported')
+    if kind=='vless':
+        try:d['uuid']=str(uuid.UUID(d['uuid']))
+        except (ValueError,TypeError,AttributeError):raise ValueError('Invalid relay UUID') from None
+        if d.get('flow')!='xtls-rprx-vision' or d.get('packet_encoding','xudp')!='xudp':raise ValueError('Relay supports Reality + Vision with XUDP')
+        r=tls.get('reality',{})
+        if not isinstance(r,dict) or set(r)-{'enabled','public_key','short_id'} or r.get('enabled') is not True:raise ValueError('Reality verification is required')
+        key=r.get('public_key','');sid=r.get('short_id','')
+        if not re.fullmatch(r'[A-Za-z0-9_-]{43}',key) or len(base64.urlsafe_b64decode(key+'='))!=32 or not re.fullmatch(r'(?:[0-9a-fA-F]{2}){0,8}',sid):raise ValueError('Invalid Reality public key/short ID')
+        u=tls.setdefault('utls',{'enabled':True,'fingerprint':'chrome'})
+        if not isinstance(u,dict) or set(u)-{'enabled','fingerprint'} or u.get('enabled') is not True or u.get('fingerprint') not in ('chrome','firefox','edge','safari','ios','android','random','randomized'):raise ValueError('Invalid Reality fingerprint')
+        if 'certificate' in tls:raise ValueError('Reality uses its public key, not a custom CA')
+    else:
+        if 'utls' in tls or 'reality' in tls:raise ValueError('Invalid HY2 TLS fields')
+        password=d.get('password')
+        if not isinstance(password,str) or not password or len(password)>1024 or any(ord(c)<32 for c in password):raise ValueError('Invalid HY2 password')
+        if 'certificate' in tls:
+            cert=tls['certificate']
+            if not isinstance(cert,list) or not cert or any(not isinstance(x,str) for x in cert):raise ValueError('Invalid embedded public certificate')
+            tls['certificate']=relay_certificate('\n'.join(cert))[0]
+        for field in ('up_mbps','down_mbps'):
+            if field in d and (type(d[field]) is not int or not 1<=d[field]<=100000):raise ValueError('Invalid HY2 relay bandwidth')
+        if 'obfs' in d:
+            ob=d['obfs']
+            if not isinstance(ob,dict) or set(ob)!={'type','password'} or ob['type']!='salamander' or not isinstance(ob['password'],str) or not 1<=len(ob['password'])<=1024 or any(ord(c)<32 for c in ob['password']):raise ValueError('Invalid HY2 relay obfuscation')
+        if 'server_ports' in d:
+            ranges=d['server_ports']
+            if not isinstance(ranges,list) or not 1<=len(ranges)<=20:raise ValueError('Invalid HY2 hopping ranges')
+            total=0
+            for item in ranges:
+                if not isinstance(item,str) or not re.fullmatch(r'[0-9]{1,5}(?::[0-9]{1,5})?',item):raise ValueError('Invalid HY2 hopping range')
+                parts=list(map(int,item.split(':')));start,end=parts[0],parts[-1]
+                if not 1<=start<=end<=65535:raise ValueError('Invalid HY2 hopping range')
+                total+=end-start+1
+            if total>20001:raise ValueError('HY2 hopping range is too large')
+        if 'hop_interval' in d and (not isinstance(d['hop_interval'],str) or not re.fullmatch(r'(?:[1-9][0-9]?|[1-5][0-9]{2}|600)s',d['hop_interval'])):raise ValueError('Invalid HY2 hopping interval')
+    return d
+
+def relay_import(source,trust=''):
+    p=Path(source)
+    if p.is_symlink() or not p.is_file() or p.stat().st_size>131072:raise ValueError('Invalid relay source file')
+    text=p.read_text().strip();pin=''
+    if text.startswith('{'):
+        d=json.loads(text)
+        if 'outbounds' in d:
+            choices=[o for o in d['outbounds'] if o.get('type')!='direct']
+            if len(choices)!=1:raise ValueError('Supply exactly one landing node')
+            d=choices[0]
+    else:
+        if len(text)>8192 or any(ord(c)<32 for c in text) or re.search(r'%(?![0-9a-fA-F]{2})',text):raise ValueError('Invalid node link')
+        u=urllib.parse.urlsplit(text);pairs=urllib.parse.parse_qsl(u.query,keep_blank_values=True)
+        if len(dict(pairs))!=len(pairs):raise ValueError('Duplicate node link parameters')
+        q=dict(pairs)
+        if any(q.get(x,'0').lower() not in ('0','false') for x in ('insecure','allowInsecure','skip-cert-verify')):raise ValueError('Unsafe relay TLS link rejected')
+        if u.scheme=='vless' and '@' not in u.netloc:
+            authority=base64.b64decode(u.netloc+'='*(-len(u.netloc)%4),altchars=b'-_',validate=True).decode()
+            if not authority.startswith('auto:'):raise ValueError('Unsupported native VLESS authority')
+            u=urllib.parse.urlsplit('vless://'+authority[5:])
+            if q.get('xtls')!='2' or q.get('tls') not in ('1','2'):raise ValueError('Only Reality/Vision native links are supported')
+            q.update(security='reality',flow='xtls-rprx-vision',sni=q.get('peer',''))
+        if u.path not in ('','/') or u.port is None or not u.hostname or '@' not in u.netloc:raise ValueError('Node credentials, address and port are required')
+        tls={'enabled':True,'insecure':False,'server_name':q.get('sni') or q.get('peer') or u.hostname}
+        d={'type':u.scheme,'server':u.hostname,'server_port':u.port,'tls':tls}
+        if u.scheme=='vless':
+            if q.get('security')!='reality' or q.get('type','tcp')!='tcp' or q.get('encryption','none')!='none':raise ValueError('Only VLESS Reality/Vision TCP links are supported')
+            d.update(uuid=urllib.parse.unquote(u.username or ''),flow=q.get('flow',''))
+            tls.update(reality={'enabled':True,'public_key':q.get('pbk',''),'short_id':q.get('sid','')},utls={'enabled':True,'fingerprint':q.get('fp','chrome')})
+            allowed={'encryption','flow','security','sni','fp','pbk','sid','type','remarks','peer','tls','xtls','insecure','allowInsecure','skip-cert-verify'}
+        elif u.scheme in ('hysteria2','hy2'):
+            d['type']='hysteria2';d['password']=urllib.parse.unquote(u.netloc.rsplit('@',1)[0]);pin=q.get('pinSHA256','').replace(':','').lower()
+            if 'obfs' in q:d['obfs']={'type':q['obfs'],'password':q.get('obfs-password','')}
+            if 'mport' in q:d.update(server_ports=q['mport'].replace('-',':').split(','),hop_interval='30s')
+            allowed={'sni','peer','insecure','allowInsecure','skip-cert-verify','pinSHA256','obfs','obfs-password','mport'}
+        else:raise ValueError('Landing node must use Reality/Vision or HY2')
+        if set(q)-allowed:raise ValueError('Unsupported node link parameters; use a single sing-box outbound JSON')
+    if trust:
+        if d.get('type')!='hysteria2':raise ValueError('Public trust certificate is only used for HY2')
+        p=Path(trust)
+        if p.is_symlink() or not p.is_file() or p.stat().st_size>65536:raise ValueError('Invalid public certificate file')
+        blocks,fingerprints=relay_certificate(p.read_text(),True)
+        if pin and (not re.fullmatch('[0-9a-f]{64}',pin) or pin not in fingerprints):raise ValueError('Relay certificate fingerprint mismatch')
+        d['tls']['certificate']=blocks
+    elif pin:raise ValueError('Pinned HY2 link requires the matching public certificate file')
+    result=relay_normalize(d)
+    if result['tls'].get('certificate'):relay_certificate('\n'.join(result['tls']['certificate']),True)
+    return result
+
+def relay_profile(path):
+    p=Path(path)
+    if p.is_symlink() or not p.is_file() or p.stat().st_size>131072:raise ValueError('Invalid private relay profile')
+    d=json.loads(p.read_text())
+    if d.get('owner')!=RELAY_OWNER or d.get('schema')!=1:raise ValueError('Relay profile ownership mismatch')
+    return relay_normalize(d['outbound'])
+
+def relay_probe(outbound,binary):
+    outbound=relay_normalize(outbound)
+    with socket.socket() as sock:sock.bind(('127.0.0.1',0));port=sock.getsockname()[1]
+    with tempfile.TemporaryDirectory() as root:
+        p=Path(root)/'probe.json'
+        cfg={'log':{'disabled':True},'inbounds':[{'type':'socks','listen':'127.0.0.1','listen_port':port}], 'outbounds':[outbound], 'route':{'final':'skybyte-relay'}}
+        p.write_text(json.dumps(cfg));p.chmod(0o600)
+        result=subprocess.run([binary,'check','-c',str(p)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL,timeout=30)
+        if result.returncode:raise ValueError('Relay configuration failed validation')
+        proc=subprocess.Popen([binary,'run','-c',str(p)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            deadline=time.monotonic()+5
+            while True:
+                if proc.poll() is not None:raise ValueError('Relay test core failed to start')
+                try:
+                    with socket.create_connection(('127.0.0.1',port),timeout=.2):break
+                except OSError:
+                    if time.monotonic()>deadline:raise ValueError('Relay test listener unavailable') from None
+                    time.sleep(.1)
+            result=subprocess.run(['curl','-q','-fsS','--noproxy','','--proxy','socks5h://127.0.0.1:'+str(port),'--proto','=https','--max-time','15','--max-filesize','65536','https://www.cloudflare.com/cdn-cgi/trace'],capture_output=True,timeout=20,text=True)
+            if result.returncode:raise ValueError('Landing TLS/authentication/HTTPS connection test failed')
+            fields=dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
+            try:ip=str(ipaddress.ip_address(fields['ip']))
+            except (ValueError,KeyError):raise ValueError('Landing egress address was not verified') from None
+            return ip
+        finally:
+            if proc.poll() is None:proc.terminate()
+            try:proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:proc.kill();proc.wait(timeout=5)
 
 def atomic(path,data):
     path=Path(path)
@@ -2353,7 +2519,11 @@ def read_state(base):
     if not p.exists():return None
     d=json.loads(p.read_text())
     if d.get('owner')!=OWNER or d.get('schema')!=1 or d['mode'] not in ('direct','restricted','global'):raise ValueError('WARP state ownership/schema mismatch')
-    if type(d['port']) is not int or not 1024<=d['port']<=65535 or type(d['udp']) is not bool:raise ValueError('Invalid WARP proxy settings')
+    provider=d.get('provider','warp')
+    if provider not in ('warp','relay'):raise ValueError('Invalid outbound provider')
+    if type(d['port']) is not int or not (1 if provider=='relay' else 1024)<=d['port']<=65535 or type(d['udp']) is not bool:raise ValueError('Invalid outbound settings')
+    if 'relay' in d:relay_normalize(d['relay'])
+    if provider=='relay' and 'relay' not in d:raise ValueError('Missing landing profile')
     return d
 
 def view(cfg):return {k:copy.deepcopy(cfg.get(k)) for k in FIELDS}
@@ -2364,17 +2534,18 @@ def put(cfg,routing):
         else:cfg[k]=copy.deepcopy(v)
     return cfg
 
-def render(baseline,mode,port,udp,domains):
+def render(baseline,mode,port,udp,domains,relay=None):
     result=copy.deepcopy(baseline)
     if mode=='direct':return result
-    result['outbounds'].append({'type':'socks','tag':'skybyte-warp','server':'127.0.0.1','server_port':port,'version':'5',**({} if udp else {'network':'tcp'})})
+    tag='skybyte-relay' if relay else 'skybyte-warp'
+    result['outbounds'].append(relay_normalize(relay) if relay else {'type':'socks','tag':tag,'server':'127.0.0.1','server_port':port,'version':'5',**({} if udp else {'network':'tcp'})})
     route=result['route'];prefix=[]
     if mode=='restricted':
         prefix=[{'action':'sniff','timeout':'500ms'}]
         if not udp:prefix.append({'domain_suffix':domains,'network':'udp','action':'reject'})
-        prefix.append({'domain_suffix':domains,'action':'route','outbound':'skybyte-warp'})
+        prefix.append({'domain_suffix':domains,'action':'route','outbound':tag})
     else:
-        route['final']='skybyte-warp'
+        route['final']=tag
         if not udp:prefix=[{'network':'udp','action':'reject'}]
     route['rules']=prefix+route.get('rules',[])
     return result
@@ -2410,8 +2581,16 @@ def validate_catalog(d):
     domains_parse(' '.join(d['media']+d['ai']))
 
 
-def switch(base,conf,binary,mode,port,udp,domains):
-    if mode not in ('direct','restricted','global') or not 1024<=port<=65535:raise ValueError('Invalid WARP mode/port')
+def switch(base,conf,binary,mode,port,udp,domains,relay=None):
+    if mode not in ('direct','restricted','global') or not (1 if relay else 1024)<=port<=65535:raise ValueError('Invalid outbound mode/port')
+    if relay:
+        relay=relay_normalize(relay)
+        names={'127.0.0.1','::1','localhost'}
+        for p in (base/'state.json',):
+            if p.exists():names.add(json.loads(p.read_text()).get('ip','').lower())
+        for p in config_paths(base,conf):
+            cfg=json.loads(p.read_text())
+            if relay['server'].lower() in names and any(i.get('listen_port')==relay['server_port'] for i in cfg.get('inbounds',[])):raise ValueError('Landing points back to a managed listener')
     prior=read_state(base)
     state=copy.deepcopy(prior) if prior else {'owner':OWNER,'schema':1,'configs':{}}
     originals={};planned={}
@@ -2424,7 +2603,8 @@ def switch(base,conf,binary,mode,port,udp,domains):
         else:
             if cfg.get('endpoints') or any(o['type']!='direct' for o in cfg['outbounds']) or cfg['route'].get('final')!='direct':raise ValueError('Unmanaged routing; refusing overwrite')
             baseline=view(cfg)
-        routing=render(baseline,mode,port,udp,domains)
+        if relay and mode!='direct' and baseline.get('route',{}).get('rules'):raise ValueError('Custom baseline routing requires manual review before relay')
+        routing=render(baseline,mode,port,udp,domains,relay)
         candidate=put(copy.deepcopy(cfg),routing)
         fd,tmp=tempfile.mkstemp(dir=path.parent)
         try:
@@ -2433,7 +2613,8 @@ def switch(base,conf,binary,mode,port,udp,domains):
             if r.returncode:raise ValueError('WARP candidate config failed validation')
         finally:os.unlink(tmp)
         planned[path]=candidate;state['configs'][str(path)]={'baseline':baseline,'applied':routing}
-    state.update(mode=mode,port=port,udp=udp,domains=domains)
+    state.update(mode=mode,port=port,udp=udp,domains=domains,provider='relay' if relay else 'warp')
+    if relay:state['relay']=relay
     try:
         for p,cfg in planned.items():atomic(p,cfg)
         atomic(base/'warp-state.json',state)
@@ -2450,6 +2631,8 @@ def restore_routing(base,conf,snapshot,binary):
     prior=read_state(base)
     originals={}
     if new and (new.get('owner')!=OWNER or new.get('schema')!=1):raise ValueError('Invalid WARP backup')
+    if new and 'relay' in new:relay_normalize(new['relay'])
+    if new and new.get('provider')=='relay' and 'relay' not in new:raise ValueError('Relay backup has no landing profile')
     planned={}
     for path in config_paths(base,conf):
         if path==conf:source=snapshot/'config'/'config.json'
@@ -2467,7 +2650,7 @@ def restore_routing(base,conf,snapshot,binary):
             else:
                 if any(o['type']!='direct' for o in current['outbounds']):raise ValueError('Unmanaged new account routing')
                 baseline=view(current)
-            routing=render(baseline,new['mode'],new['port'],new['udp'],new['domains']) if new else baseline
+            routing=render(baseline,new['mode'],new['port'],new['udp'],new['domains'],new.get('relay') if new.get('provider')=='relay' else None) if new else baseline
             if new:new['configs'][str(path)]={'baseline':baseline,'applied':routing}
         planned[path]=put(current,routing)
     for path,cfg in planned.items():
@@ -2527,15 +2710,46 @@ if __name__=='__main__':
     import sys
     base,conf,binary,action,*args=sys.argv[1:];base=Path(base);conf=Path(conf)
     if action=='switch':switch(base,conf,binary,args[0],int(args[1]),args[2]=='true',domains_parse(args[3]))
+    elif action=='reconcile':
+        s=read_state(base)
+        if s:switch(base,conf,binary,s['mode'],s['port'],s['udp'],s['domains'],s.get('relay') if s.get('provider')=='relay' else None)
+    elif action.startswith('relay_'):
+        try:
+            if action=='relay_prepare':atomic(args[1],{'owner':RELAY_OWNER,'schema':1,'outbound':relay_import(args[0],args[2])})
+            elif action=='relay_export':
+                s=read_state(base)
+                if not s or 'relay' not in s:raise ValueError('No landing node configured')
+                atomic(args[0],{'owner':RELAY_OWNER,'schema':1,'outbound':s['relay']})
+            elif action=='relay_probe':print(relay_probe(relay_profile(args[0]),binary))
+            elif action=='relay_switch':
+                r=relay_profile(args[1]);switch(base,conf,binary,args[0],r['server_port'],r.get('network')!='tcp',domains_parse(args[2]),r)
+            elif action=='relay_status':
+                s=read_state(base)
+                zh=bool(args and args[0]=='zh_CN')
+                if not s or 'relay' not in s:print('尚未配置落地节点' if zh else 'Relay: not configured')
+                else:
+                    r=relay_normalize(s['relay']);mode=s['mode'] if s.get('provider')=='relay' else 'inactive'
+                    print(('中转：' if zh else 'Relay: ')+r['type']+' | '+r['server']+':'+str(r['server_port'])+(' | TLS 验证：开启 | ' if zh else ' | TLS verification: on | ')+({'global':'全局中转','restricted':'指定域名中转','direct':'已恢复直连','inactive':'中转未启用'}[mode] if zh else mode))
+                    for cert in r['tls'].get('certificate',[]):print(('公开证书 SHA256：' if zh else 'Public certificate SHA256: ')+hashlib.sha256(ssl.PEM_cert_to_DER_cert(cert)).hexdigest())
+            elif action=='relay_forget':
+                s=read_state(base)
+                if s and 'relay' in s:
+                    if s.get('provider')=='relay' and s['mode']!='direct':raise ValueError('Disable relay routing before removing its profile')
+                    s.pop('relay')
+                    if s.get('provider')=='relay':s['provider']='warp';s['port']=40000
+                    atomic(base/'warp-state.json',s)
+            else:raise ValueError('Unknown relay action')
+        except (ValueError,KeyError,TypeError,OSError,subprocess.SubprocessError):
+            raise SystemExit('Relay operation failed; check protocol fields, trusted certificate and landing connectivity. TLS verification remains required.') from None
     elif action=='restore':restore_routing(base,conf,Path(args[0]),binary)
     elif action=='gateway':gateway(args[0],int(args[1]),base/'warp-gateway.json',binary)
     elif action=='port':
         state=read_state(base)
-        if not state:raise ValueError('WARP routing is not configured')
+        if not state or state.get('provider','warp')!='warp':raise ValueError('WARP routing is not configured; current provider is relay')
         print(state['port'])
     elif action=='status':
         state=read_state(base)
-        print('WARP: '+(state['mode']+' | 127.0.0.1:'+str(state['port'])+' | UDP: '+str(state['udp']) if state else 'not configured'))
+        print('WARP: '+(state['mode']+' | 127.0.0.1:'+str(state['port'])+' | UDP: '+str(state['udp']) if state and state.get('provider','warp')=='warp' else 'inactive (relay selected)' if state else 'not configured'))
     elif action=='forget_argo':
         state=read_state(base)
         if state:
@@ -2752,14 +2966,7 @@ warp_restore_snapshot(){
 }
 warp_reconcile(){
  [[ -f $BASE/warp-state.json ]] || return 0
- local settings mode port udp domains
- settings=$(python3 - "$BASE/warp-state.json" <<'PY_WARP_SETTINGS'
-import json,sys
-s=json.load(open(sys.argv[1]));print(s['mode']);print(s['port']);print(str(s['udp']).lower());print(' '.join(s['domains']))
-PY_WARP_SETTINGS
- ) || return 1
- { IFS= read -r mode; IFS= read -r port; IFS= read -r udp; IFS= read -r domains; } <<<"$settings"
- warp_engine switch "$mode" "$port" "$udp" "$domains"
+ warp_engine reconcile
 }
 
 warp_menu(){
@@ -2824,6 +3031,78 @@ PY_RULE_DIGEST
  if ! curl -q -fsSL --proto '=https' --max-time 25 --max-filesize 65536 "https://github.com/skylink9119/sing-box-v2/releases/download/$version/warp-rules.json" -o "$tmp/rules.json" || ! printf '%s  %s\n' "$digest" "$tmp/rules.json" | sha256sum -c - >/dev/null;then rm -rf "$tmp";return 1;fi
  warp_engine catalog_update "$tmp/rules.json";local rc=$?;rm -rf "$tmp";return "$rc"
 }
+relay_verify(){
+ local address
+ address=$(warp_engine relay_probe "$1") || { err "$(L '落地节点连接验证失败；未应用中转。请检查地址、凭据、证书和中转到落地的链路。' 'Landing connection failed; relay not applied. Check address, credentials, trust and the entry-to-exit link.')";return 1; }
+ ok "$(L '落地 TCP / HTTPS 出口验证通过：' 'Landing TCP / HTTPS egress verified: ')$address"
+ say 'UDP 可达性和实际速度需另行实测；检测不代表住宅 IP 属性或平台解锁。' 'UDP reachability and speed need separate measurement; this test does not establish residential IP classification or platform access.'
+}
+relay_switch(){
+ local mode=$1 profile=$2 domains=${3:-example.com} snap admin=false argo=false users=false
+ check_owned && warp_guard && users_guard && argo_guard || return 1
+ if [[ $mode != direct ]];then relay_verify "$profile" || return 1;fi
+ snap=$(backup) || return 1
+ if systemctl is-active --quiet sing-box.service;then admin=true;fi
+ if [[ -f $BASE/argo-state.json ]] && systemctl is-active --quiet skybyte-argo-node.service;then argo=true;fi
+ if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service;then users=true;users_stop || return 1;fi
+ if ! warp_engine relay_switch "$mode" "$profile" "$domains";then warp_resume "$admin" "$argo" "$users" || :;return 1;fi
+ if ! warp_resume "$admin" "$argo" "$users";then
+  if [[ $users == true ]];then users_stop || :;fi
+  warp_engine restore "$snap" || return 1
+  warp_resume "$admin" "$argo" "$users" || :
+  err "$(L '中转重启失败，已回滚原出站配置。' 'Relay restart failed; previous routing restored.')";return 1
+ fi
+ ok "$(L '中转出站模式已应用：' 'Relay routing applied: ')$mode"
+ say "备份：$snap" "Backup: $snap"
+}
+relay_import_menu() (
+ local choice source link trust stage mode domains rc=0
+ stage=$(mktemp -d "$BASE/relay-import.XXXXXX") || return 1
+ trap 'rm -rf -- "$stage"' EXIT
+ prompt_options '1 粘贴节点链接（隐藏输入）  2 导入本地节点 / sing-box JSON 文件  0 返回' '1 Paste node URI (hidden input)  2 Local node / sing-box JSON file  0 Back'
+ prompt_read '> ' choice || { rm -rf "$stage";return 0; }
+ case $choice in
+  1)
+   prompt_read "$(L '落地 Reality/Vision 或 HY2 链接（隐藏）：' 'Landing Reality/Vision or HY2 URI (hidden): ')" link secret || { rm -rf "$stage";return 0; };echo
+   printf '%s\n' "$link" > "$stage/source";unset link;source=$stage/source;;
+  2) prompt_read "$(L '私密节点文件路径（仅一个落地节点）：' 'Private node file path (exactly one landing node): ')" source || { rm -rf "$stage";return 0; };;
+  0) rm -rf "$stage";return 0;; *) rm -rf "$stage";return 1;;
+ esac
+ say 'HY2 自签名：从落地 VPS 经可信 SSH/SFTP 获取公开证书并核对指纹，不要提供私钥。受信任 CA 证书可回车跳过。' 'Self-signed HY2: retrieve the public certificate over trusted SSH/SFTP and verify its fingerprint. Never supply a private key. Press Enter for a trusted CA certificate.'
+ prompt_read "$(L 'HY2 公开信任证书路径（可选）：' 'HY2 public trust certificate path (optional): ')" trust || { rm -rf "$stage";return 0; }
+ if ! warp_engine relay_prepare "$source" "$stage/profile.json" "$trust";then rm -rf "$stage";return 1;fi
+ prompt_options '1 全部节点流量走落地（默认）  2 仅指定域名走落地，其余直连  0 取消' '1 All node traffic through landing (default)  2 Selected domains; others direct  0 Cancel'
+ prompt_read '> ' choice || { rm -rf "$stage";return 0; };choice=${choice:-1};domains=example.com
+ case $choice in
+  1) mode=global;;
+  2) mode=restricted;prompt_read "$(L '域名后缀，空格分隔：' 'Domain suffixes, space-separated: ')" domains || { rm -rf "$stage";return 0; };;
+  0) rm -rf "$stage";return 0;; *) rm -rf "$stage";return 1;;
+ esac
+ warn "$(L '此操作替换当前 WARP / 中转出站策略，并短暂重启运行中的管理员、用户和 Argo 节点。客户端仍连接本 VPS；落地凭据不会导出给用户。' 'This replaces current WARP / relay routing and briefly restarts active admin, account and Argo nodes. Clients still connect to this VPS; landing credentials are not exported.')"
+ if confirm "$(L '验证落地并启用中转？' 'Verify the landing node and enable relay?')";then relay_switch "$mode" "$stage/profile.json" "$domains" || rc=$?;fi
+ rm -rf "$stage";return "$rc"
+)
+relay_menu() (
+ check_owned && warp_guard || return 1
+ local choice stage rc=0
+ printf '%s' "$YELLOW";warp_engine relay_status "${LANGUAGE_CHOICE:-zh_CN}";printf '%s' "$RESET"
+ say '路径：客户端 → 本 VPS → 落地 VPS → 网站。落地失败不自动改用本机出口。' 'Path: client → this VPS → landing VPS → destination. Landing failure does not automatically use this VPS as the exit.'
+ prompt_options '1 导入 / 更换落地节点  2 测试落地连接  3 全局中转  4 恢复直连  5 删除已保存的落地凭据  0 返回' '1 Import / replace landing  2 Test landing  3 Global relay  4 Restore direct  5 Remove saved landing credentials  0 Back'
+ prompt_read '> ' choice || return 0
+ if [[ $choice == 1 ]];then relay_import_menu;return $?;fi
+ [[ $choice != 0 ]] || return 0
+ stage=$(mktemp -d "$BASE/relay-action.XXXXXX") || return 1
+ trap 'rm -rf -- "$stage"' EXIT
+ if ! warp_engine relay_export "$stage/profile.json";then rm -rf "$stage";return 1;fi
+ case $choice in
+  2) relay_verify "$stage/profile.json" || rc=$?;;
+  3) confirm "$(L '验证并切换所有节点到住宅落地出口？当前 WARP / 中转分流将被替换。' 'Verify and route all nodes through the landing exit? Current WARP / relay routing will be replaced.')" && relay_switch global "$stage/profile.json" || rc=$?;;
+  4) confirm "$(L '恢复原始直连路由？网站将看到本 VPS 出口 IP。' 'Restore original direct routing? Destinations will see this VPS egress IP.')" && relay_switch direct "$stage/profile.json" || rc=$?;;
+  5) confirm "$(L '删除保存的落地凭据？已启用中转时须先恢复直连或切换 WARP。' 'Remove saved landing credentials? First restore direct routing or switch to WARP if relay is active.')" && warp_engine relay_forget || rc=$?;;
+  *) rc=1;;
+ esac
+ rm -rf "$stage";return "$rc"
+)
 
 installation_commit(){
  python3 - "$@" <<'PY_INSTALL_COMMIT'
@@ -3753,6 +4032,7 @@ SKYBYTE Manager — quick guide
 8. Backup: main 5 → 2 creates a backup; 3 restores it; 7 lists/preflights/encrypts/imports or explicitly prunes old backups. Backups contain keys. Restore keeps current usage/policies and current subscription tokens.
 9. Versions: main 5 → 1 selects this release's tested core, latest stable or a specific version/downgrade. Every managed config must validate; weekly auto-update remains removed.
 10. Resources: main 4 → 7. Each account uses a core. Capacity depends on measured memory/CPU/traffic. Account quotas are periodically enforced, not byte-exact billing.
+11. Residential landing / VPS relay: main 4 → 10. Import one Reality/Vision or HY2 landing URI/JSON. Clients connect to this VPS and destinations see the landing exit. Self-signed HY2 requires trusted public certificate material. Relay and WARP are alternative routing policies; failed relay traffic has no automatic direct fallback. Measure both links before judging speed.
 CLI: --help, --self-check. Maintenance flags are used by owned systemd services.
 HELP_EN
  else cat <<'HELP_ZH'
@@ -3767,6 +4047,7 @@ SKYBYTE Manager — 快速使用说明
 8. 备份：主菜单5 → 2新建、3恢复、7列表/预检/加密导出/导入/确认清理旧备份。备份含私钥。恢复保留当前用量、策略和当前订阅Token。
 9. 版本：主菜单5 → 1选本版测试内核、最新稳定版或指定版本/降级，须检查全部托管配置。每周自动更新保持移除。
 10. 资源：主菜单4 → 7，每个用户一个内核，容量需实测。配额周期检查，不是精确计费。
+11. 住宅落地 / VPS 中转：主菜单4 → 10，导入一个 Reality/Vision 或 HY2 落地链接/JSON。客户端连接本 VPS，网站看到落地出口。自签名 HY2 须提供可信公开证书；中转与 WARP 分流择一启用，中转失败不自动直连。速度需按两段链路实测。
 命令行：--help、--self-check。维护参数供本工具的 systemd 服务使用。
 HELP_ZH
  fi
@@ -3819,6 +4100,7 @@ sub_menu(){
    say ' 7. 进程、内存与负载' ' 7. Processes, memory and load'
    say ' 8. 流媒体可用性检测' ' 8. Streaming availability tests'
    say ' 9. WARP 出站与分流' ' 9. WARP egress and routing'
+   say '10. 住宅落地 / VPS 中转' '10. Residential landing / VPS relay'
    ;;
   5)
    say ' 1. 手动更新 sing-box' ' 1. Update sing-box'
@@ -3863,6 +4145,7 @@ sub_menu(){
   4:7) MAIN_ACTION=resources;;
   4:8) MAIN_ACTION=media;;
   4:9) MAIN_ACTION=warp;;
+  4:10) MAIN_ACTION=relay;;
   5:1) MAIN_ACTION=update;;
   5:2) MAIN_ACTION=backup;;
   5:3) MAIN_ACTION=restore;;
@@ -3883,7 +4166,7 @@ dispatch_action(){
  argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;; qr) shadowrocket_qr;; users) users_manager;;
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
- media) media_check;; warp) warp_menu;;
+ media) media_check;; warp) warp_menu;; relay) relay_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
  update) core_versions;; settings) node_settings;; online) online_menu;; acme) acme_menu;; backup_tools) backup_tools;; help) usage_help;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;

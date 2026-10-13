@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.5.0
+MANAGER_VERSION=2.6.0
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -1041,6 +1041,7 @@ PY
 # @include media.sh
 
 # @include warp.sh
+# @include relay.sh
 
 # @include reliability.sh
 
