@@ -23,14 +23,14 @@ YouTube：[SKYBYTE9119](https://www.youtube.com/@SKYBYTE9119) · [English](READM
 
 ## Ubuntu/Debian VPS 一键安装
 
-需要 root、Ubuntu/Debian、systemd 和可用的公网 IPv4 或 IPv6；支持 x86_64/arm64。保留 `install.sh` 一键入口：
+需要 root、Ubuntu/Debian、systemd 和可用的公网 IPv4 或 IPv6；支持 x86_64/arm64。请以 root 账号登录 VPS 后执行，保留 `install.sh` 一键入口：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/skylink9119/sing-box-v2/main/install.sh -o install.sh
-sudo bash install.sh
+bash install.sh
 ```
 
-开发分支未合并时，上述命令仍安装 main 版本。测试当前分支可先克隆仓库并切换到对应分支，再运行 `sudo bash ./singbox-v2.sh`。建议先审阅下载的脚本。
+开发分支未合并时，上述命令仍安装 main 版本。测试当前分支可先克隆仓库并切换到对应分支，再以 root 账号运行 `bash ./singbox-v2.sh`。建议先审阅下载的脚本。
 
 首次安装使用本版已测试的 sing-box 1.14.3 官方二进制，按 GitHub Release API 的 SHA-256 摘要检查下载，不执行远程软件包安装脚本。首次启动选择语言，保存于 `/etc/singbox-v2/language.conf`，菜单 **6 → 1** 切换语言。
 

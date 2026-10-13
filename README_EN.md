@@ -23,14 +23,14 @@ The main menu includes the SKYBYTE ASCII logo. Menus are bold green, credential 
 
 ## Ubuntu/Debian VPS installation
 
-Requires root, Ubuntu/Debian, systemd and a reachable public IPv4 or IPv6 address. Supports x86_64/arm64. The existing `install.sh` entry point remains available:
+Requires root, Ubuntu/Debian, systemd and a reachable public IPv4 or IPv6 address. Supports x86_64/arm64. Log in to the VPS as root and use the existing `install.sh` entry point:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/skylink9119/sing-box-v2/main/install.sh -o install.sh
-sudo bash install.sh
+bash install.sh
 ```
 
-Until the development branch is merged, that command installs the main version. To test this branch, clone the repository, switch to the branch and run `sudo bash ./singbox-v2.sh`. Review downloaded scripts before execution.
+Until the development branch is merged, that command installs the main version. To test this branch, clone the repository, switch to the branch and run `bash ./singbox-v2.sh` as root. Review downloaded scripts before execution.
 
 Fresh installation uses the official sing-box 1.14.3 binary tested for this manager release and verifies its SHA-256 digest against GitHub Release metadata. It does not run a remote package installer. Choose a language at first launch; it is saved in `/etc/singbox-v2/language.conf`. Menu **6 → 1** changes language.
 
