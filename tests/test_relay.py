@@ -164,10 +164,19 @@ class RelayTest(unittest.TestCase):
 
     def test_bilingual_menu_and_import_cancel_leave_no_private_temp_files(self):
         self.configure()
+        before={str(p.relative_to(self.root)):p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
         for lang in ('zh_CN','en_US'):
             r=self.shell('LANGUAGE_CHOICE='+lang+';sub_menu 4;printf "action=%s" "$MAIN_ACTION"',input='10\n');self.assertIn('action=relay',r.stdout)
+            guide=self.shell('LANGUAGE_CHOICE='+lang+';relay_menu',input='6\n')
+            self.assertIn('6 使用说明' if lang=='zh_CN' else '6 Usage guide',guide.stdout)
+            self.assertIn('/root/landing-hy2-ca.pem',guide.stdout);self.assertIn('fingerprint -sha256',guide.stdout)
+            self.assertEqual(before,{str(p.relative_to(self.root)):p.read_bytes() for p in self.root.rglob('*') if p.is_file()})
+            self.assertFalse(list(self.base.glob('relay-action.*')))
         self.shell('relay_import_menu',input='0\n');self.assertFalse(list(self.base.glob('relay-import.*')))
         self.shell('relay_menu',input='0\n');self.assertFalse(list(self.base.glob('relay-action.*')))
+        d=self.profile();self.switch(d);state=(self.base/'warp-state.json').read_bytes();cfg=(self.config/'config.json').read_bytes()
+        guide=self.shell('relay_menu',input='6\n');self.assertNotIn(d['password'],guide.stdout+guide.stderr)
+        self.assertEqual(state,(self.base/'warp-state.json').read_bytes());self.assertEqual(cfg,(self.config/'config.json').read_bytes())
 
     def test_pasted_uri_is_not_a_process_argument_or_terminal_output(self):
         self.configure();log=self.root/'args';secret='landing-private-'+uuid.uuid4().hex

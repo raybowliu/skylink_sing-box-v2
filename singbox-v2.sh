@@ -8,7 +8,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.6.0
+MANAGER_VERSION=2.6.1
 CORE_RECOMMENDED=1.14.3
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
@@ -3082,14 +3082,93 @@ relay_import_menu() (
  if confirm "$(L '验证落地并启用中转？' 'Verify the landing node and enable relay?')";then relay_switch "$mode" "$stage/profile.json" "$domains" || rc=$?;fi
  rm -rf "$stage";return "$rc"
 )
+relay_help(){
+ printf '%s' "$YELLOW"
+ if [[ ${LANGUAGE_CHOICE:-zh_CN} == en_US ]];then cat <<'RELAY_HELP_EN'
+Residential landing / VPS relay — usage guide
+
+A = entry VPS with a good client-facing route; your phone connects to A.
+B = residential landing VPS; destinations see B's actual egress IP.
+Path: phone → A → B → destination. Run this relay menu on A.
+
+1. Prepare B: install Reality + Vision or HY2, or use an existing working node.
+   On B, menu 2 → 1 displays nodes. Copy one complete vless:// or hysteria2:// URI.
+   Keep B's egress direct to retain the residential exit. If B uses WARP, switch it to direct first.
+   Allow B's actual node port: TCP for Reality, UDP for HY2, including the provider firewall.
+2. On A, select 1 Import / replace landing, then 1 Paste node URI.
+   Paste B's URI and press Enter. Hidden input displays no characters; this is expected.
+3. Trust: press Enter for Reality or HY2 with a trusted CA certificate.
+   Self-signed HY2 requires B's PUBLIC certificate on A. Retrieve it over trusted SSH/SFTP.
+   Example on A (replace LANDING_VPS_IP with B's address; default SSH port 22):
+     scp root@LANDING_VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
+   For another SSH port, add -P with that port to scp.
+   Compare SHA256 fingerprints through a trusted channel:
+     On B: openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
+     On A: openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
+   Supply this path at A's certificate prompt: /root/landing-hy2-ca.pem
+   Never copy B's private key or disable TLS verification.
+4. Choose 1 All node traffic through landing (Enter accepts the default), then type YES.
+   The script tests landing connectivity, backs up and applies the policy if successful.
+   Relay is enabled when import completes. Selected-domain mode keeps unmatched traffic direct.
+5. Your phone continues using A's original node URI/QR and certificate trust.
+   If A itself uses self-signed HY2, the phone still needs to trust A's public certificate.
+   Select 2 Test landing: the reported egress should belong to B's residential connection.
+   Test actual access, uploads/downloads and latency on the phone.
+
+Controls: 1 import/replace; 2 test; 3 global relay; 4 restore A's direct exit;
+          5 remove saved landing credentials after disabling relay or switching to WARP;
+          6 this guide; 0 back.
+Landing failure has no automatic direct fallback. Relay and WARP are alternative policies.
+Speed depends on both links; the connection test does not prove a speed increase or residential IP classification.
+RELAY_HELP_EN
+ else cat <<'RELAY_HELP_ZH'
+住宅落地 / VPS 中转 — 使用说明
+
+A = 中转 VPS，大陆连接线路较好，手机连接 A。
+B = 住宅 IP 落地 VPS，作为最终出口。
+路径：手机 → A → B → 网站。请在 A 上操作这个中转菜单。
+
+1. 先准备 B：安装 Reality + Vision 或 HY2；已有可用节点可直接使用。
+   在 B 的菜单 2 → 1 查看节点，复制完整的 vless:// 或 hysteria2:// 单节点链接。
+   为保留住宅 IP，B 的出站保持直连；若开启过 WARP，先切回直连。
+   放行 B 的实际协议端口：Reality 使用 TCP，HY2 使用 UDP，云防火墙也需放行。
+2. 在 A 选择 1「导入 / 更换落地节点」，再选 1「粘贴节点链接」。
+   粘贴 B 的链接后回车。这里是隐藏输入，粘贴后看不到字符属于正常情况。
+3. 证书：Reality 或使用受信任 CA 证书的 HY2，直接回车。
+   HY2 自签名落地需要将 B 的公开证书通过可信 SSH/SFTP 复制到 A。
+   在 A 执行以下示例（将住宅VPS_IP换成 B 的地址，默认 SSH 端口为 22）：
+     scp root@住宅VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
+   SSH 端口改过时，在 scp 命令中加 -P 和实际端口。
+   通过可信通道核对两端的 SHA256 指纹：
+     B 上：openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
+     A 上：openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
+   在 A 的证书路径提示中填写：/root/landing-hy2-ca.pem
+   只复制公开证书，不要复制 B 的私钥，也不要关闭 TLS 验证。
+4. 选择 1「全部节点流量走落地」，回车使用默认值，再输入 YES 确认。
+   脚本先验证落地连接，成功后备份并应用出站策略；导入完成时已经启用中转。
+   也可选择指定域名模式，未匹配流量按设置直连。
+5. 手机继续使用 A 原来的节点链接 / 二维码及证书信任设置。
+   如果 A 的入口也是 HY2 自签名，手机仍需信任 A 的公开证书。
+   菜单 2「测试落地连接」显示的出口应属于 B 的实际住宅出口。
+   再用手机测试实际访问、上传、下载和延迟。
+
+按钮说明：1 导入 / 更换；2 测试连接；3 切回全局中转；4 恢复 A 的直连出口；
+          5 先恢复直连或切换 WARP，再删除保存的落地凭据；6 本说明；0 返回。
+落地失败不会自动改用 A 的出口；中转和 WARP 分流择一启用。
+速度取决于两段链路，连接验证不能证明实际提速或住宅 IP 分类。
+RELAY_HELP_ZH
+ fi
+ printf '%s' "$RESET"
+}
 relay_menu() (
  check_owned && warp_guard || return 1
  local choice stage rc=0
  printf '%s' "$YELLOW";warp_engine relay_status "${LANGUAGE_CHOICE:-zh_CN}";printf '%s' "$RESET"
  say '路径：客户端 → 本 VPS → 落地 VPS → 网站。落地失败不自动改用本机出口。' 'Path: client → this VPS → landing VPS → destination. Landing failure does not automatically use this VPS as the exit.'
- prompt_options '1 导入 / 更换落地节点  2 测试落地连接  3 全局中转  4 恢复直连  5 删除已保存的落地凭据  0 返回' '1 Import / replace landing  2 Test landing  3 Global relay  4 Restore direct  5 Remove saved landing credentials  0 Back'
+ prompt_options '1 导入 / 更换落地节点  2 测试落地连接  3 全局中转  4 恢复直连  5 删除已保存的落地凭据  6 使用说明  0 返回' '1 Import / replace landing  2 Test landing  3 Global relay  4 Restore direct  5 Remove saved landing credentials  6 Usage guide  0 Back'
  prompt_read '> ' choice || return 0
  if [[ $choice == 1 ]];then relay_import_menu;return $?;fi
+ if [[ $choice == 6 ]];then relay_help;return 0;fi
  [[ $choice != 0 ]] || return 0
  stage=$(mktemp -d "$BASE/relay-action.XXXXXX") || return 1
  trap 'rm -rf -- "$stage"' EXIT
@@ -4032,7 +4111,7 @@ SKYBYTE Manager — quick guide
 8. Backup: main 5 → 2 creates a backup; 3 restores it; 7 lists/preflights/encrypts/imports or explicitly prunes old backups. Backups contain keys. Restore keeps current usage/policies and current subscription tokens.
 9. Versions: main 5 → 1 selects this release's tested core, latest stable or a specific version/downgrade. Every managed config must validate; weekly auto-update remains removed.
 10. Resources: main 4 → 7. Each account uses a core. Capacity depends on measured memory/CPU/traffic. Account quotas are periodically enforced, not byte-exact billing.
-11. Residential landing / VPS relay: main 4 → 10. Import one Reality/Vision or HY2 landing URI/JSON. Clients connect to this VPS and destinations see the landing exit. Self-signed HY2 requires trusted public certificate material. Relay and WARP are alternative routing policies; failed relay traffic has no automatic direct fallback. Measure both links before judging speed.
+11. Residential landing / VPS relay: main 4 → 10, then 6 for step-by-step help. Import one Reality/Vision or HY2 landing URI/JSON. Clients connect to this VPS and destinations see the landing exit. Self-signed HY2 requires trusted public certificate material. Relay and WARP are alternative routing policies; failed relay traffic has no automatic direct fallback. Measure both links before judging speed.
 CLI: --help, --self-check. Maintenance flags are used by owned systemd services.
 HELP_EN
  else cat <<'HELP_ZH'
@@ -4047,7 +4126,7 @@ SKYBYTE Manager — 快速使用说明
 8. 备份：主菜单5 → 2新建、3恢复、7列表/预检/加密导出/导入/确认清理旧备份。备份含私钥。恢复保留当前用量、策略和当前订阅Token。
 9. 版本：主菜单5 → 1选本版测试内核、最新稳定版或指定版本/降级，须检查全部托管配置。每周自动更新保持移除。
 10. 资源：主菜单4 → 7，每个用户一个内核，容量需实测。配额周期检查，不是精确计费。
-11. 住宅落地 / VPS 中转：主菜单4 → 10，导入一个 Reality/Vision 或 HY2 落地链接/JSON。客户端连接本 VPS，网站看到落地出口。自签名 HY2 须提供可信公开证书；中转与 WARP 分流择一启用，中转失败不自动直连。速度需按两段链路实测。
+11. 住宅落地 / VPS 中转：主菜单4 → 10，再选6查看具体步骤，导入一个 Reality/Vision 或 HY2 落地链接/JSON。客户端连接本 VPS，网站看到落地出口。自签名 HY2 须提供可信公开证书；中转与 WARP 分流择一启用，中转失败不自动直连。速度需按两段链路实测。
 命令行：--help、--self-check。维护参数供本工具的 systemd 服务使用。
 HELP_ZH
  fi
