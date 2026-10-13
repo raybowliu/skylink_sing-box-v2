@@ -54,74 +54,111 @@ relay_help(){
  if [[ ${LANGUAGE_CHOICE:-zh_CN} == en_US ]];then cat <<'RELAY_HELP_EN'
 Residential landing / VPS relay — usage guide
 
-A = entry VPS with a good client-facing route; your phone connects to A.
-B = residential landing VPS; destinations see B's actual egress IP.
-Path: phone → A → B → destination. Run this relay menu on A.
+Copy the residential server's node URI into the entry server's manager.
 
-1. Prepare B: install Reality + Vision or HY2, or use an existing working node.
-   On B, menu 2 → 1 displays nodes. Copy one complete vless:// or hysteria2:// URI.
-   Keep B's egress direct to retain the residential exit. If B uses WARP, switch it to direct first.
-   Allow B's actual node port: TCP for Reality, UDP for HY2, including the provider firewall.
-2. On A, select 1 Import / replace landing, then 1 Paste node URI.
-   Paste B's URI and press Enter. Hidden input displays no characters; this is expected.
-3. Trust: press Enter for Reality or HY2 with a trusted CA certificate.
-   Self-signed HY2 requires B's PUBLIC certificate on A. Retrieve it over trusted SSH/SFTP.
-   Example on A (replace LANDING_VPS_IP with B's address; default SSH port 22):
-     scp root@LANDING_VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
-   For another SSH port, add -P with that port to scp.
-   Compare SHA256 fingerprints through a trusted channel:
-     On B: openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
-     On A: openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
-   Supply this path at A's certificate prompt: /root/landing-hy2-ca.pem
-   Never copy B's private key or disable TLS verification.
-4. Choose 1 All node traffic through landing (Enter accepts the default), then type YES.
-   The script tests landing connectivity, backs up and applies the policy if successful.
-   Relay is enabled when import completes. Selected-domain mode keeps unmatched traffic direct.
-5. Your phone continues using A's original node URI/QR and certificate trust.
-   If A itself uses self-signed HY2, the phone still needs to trust A's public certificate.
-   Select 2 Test landing: the reported egress should belong to B's residential connection.
-   Test actual access, uploads/downloads and latency on the phone.
+First identify the two servers:
+  A: entry server. Your phone connects to A.
+  B: residential IP server. B accesses websites; websites see B's residential exit IP.
+Both servers need working nodes. Open a separate SSH terminal for each server.
+
+1. Open B's terminal.
+   Install Reality + Vision or HY2 if needed; an existing working node is fine.
+   In SKYBYTE Manager, select 2 → 1 View nodes.
+   Copy one complete red URI beginning with vless:// or hysteria2://.
+2. Switch to A's terminal.
+   Open 4 → 10 Residential landing / VPS relay.
+   Select 1 Import / replace landing, then 1 Paste node URI.
+3. Paste B's URI and press Enter.
+   Hidden input displays no characters while pasting; this is expected.
+4. Handle the certificate prompt.
+   For Reality or HY2 with a trusted CA certificate, press Enter.
+   For self-signed HY2 on B, copy B's PUBLIC certificate to A, verify its fingerprint
+   and enter its file path on A. See the certificate commands below.
+5. Choose 1 All node traffic through landing (Enter accepts the default), then type YES.
+   The script tests B's connection, backs up and applies the policy if successful.
+   Relay is enabled when import completes.
+
+Finally, Shadowrocket uses A's node URI or QR code.
+Path after connecting: Shadowrocket → A entry server → B residential server → website.
+
+Only for self-signed HY2 on B: public certificate transfer
+  Run on A over trusted SSH/SFTP (replace LANDING_VPS_IP with B's address; SSH defaults to 22):
+    scp root@LANDING_VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
+  For another SSH port, add -P with that port to scp.
+  Compare SHA256 fingerprints through a trusted channel:
+    On B: openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
+    On A: openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
+  After confirming they match, enter this path at A's certificate prompt:
+    /root/landing-hy2-ca.pem
+  Never copy B's private key or disable TLS verification.
+  If B uses another deployment tool, copy from its actual public certificate path.
+
+Preparation and checks:
+  Keep B's egress direct to retain the residential exit; disable WARP routing on B if active.
+  Allow B's actual node port from A: TCP for Reality, UDP for HY2, including the provider firewall.
+  If A uses self-signed HY2, Shadowrocket still needs to trust A's public certificate.
+  On A, select 2 Test landing: the reported egress should belong to B's residential connection.
+  Test actual access, uploads/downloads and latency on the phone.
 
 Controls: 1 import/replace; 2 test; 3 global relay; 4 restore A's direct exit;
           5 remove saved landing credentials after disabling relay or switching to WARP;
           6 this guide; 0 back.
 Landing failure has no automatic direct fallback. Relay and WARP are alternative policies.
+Selected-domain mode keeps unmatched traffic direct.
 Speed depends on both links; the connection test does not prove a speed increase or residential IP classification.
 RELAY_HELP_EN
  else cat <<'RELAY_HELP_ZH'
 住宅落地 / VPS 中转 — 使用说明
 
-A = 中转 VPS，大陆连接线路较好，手机连接 A。
-B = 住宅 IP 落地 VPS，作为最终出口。
-路径：手机 → A → B → 网站。请在 A 上操作这个中转菜单。
+把住宅服务器的节点链接，填进中转服务器的脚本里。手机连接中转服务器。
 
-1. 先准备 B：安装 Reality + Vision 或 HY2；已有可用节点可直接使用。
-   在 B 的菜单 2 → 1 查看节点，复制完整的 vless:// 或 hysteria2:// 单节点链接。
-   为保留住宅 IP，B 的出站保持直连；若开启过 WARP，先切回直连。
-   放行 B 的实际协议端口：Reality 使用 TCP，HY2 使用 UDP，云防火墙也需放行。
-2. 在 A 选择 1「导入 / 更换落地节点」，再选 1「粘贴节点链接」。
-   粘贴 B 的链接后回车。这里是隐藏输入，粘贴后看不到字符属于正常情况。
-3. 证书：Reality 或使用受信任 CA 证书的 HY2，直接回车。
-   HY2 自签名落地需要将 B 的公开证书通过可信 SSH/SFTP 复制到 A。
-   在 A 执行以下示例（将住宅VPS_IP换成 B 的地址，默认 SSH 端口为 22）：
-     scp root@住宅VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
-   SSH 端口改过时，在 scp 命令中加 -P 和实际端口。
-   通过可信通道核对两端的 SHA256 指纹：
-     B 上：openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
-     A 上：openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
-   在 A 的证书路径提示中填写：/root/landing-hy2-ca.pem
-   只复制公开证书，不要复制 B 的私钥，也不要关闭 TLS 验证。
-4. 选择 1「全部节点流量走落地」，回车使用默认值，再输入 YES 确认。
-   脚本先验证落地连接，成功后备份并应用出站策略；导入完成时已经启用中转。
-   也可选择指定域名模式，未匹配流量按设置直连。
-5. 手机继续使用 A 原来的节点链接 / 二维码及证书信任设置。
-   如果 A 的入口也是 HY2 自签名，手机仍需信任 A 的公开证书。
-   菜单 2「测试落地连接」显示的出口应属于 B 的实际住宅出口。
-   再用手机测试实际访问、上传、下载和延迟。
+先分清两台机器：
+  A：中转服务器，负责让你的手机连接。
+  B：住宅 IP 服务器，负责访问网站，让网站看到住宅 IP。
+两台服务器都要有可用节点。操作时，分别打开它们的 SSH 终端。
+
+1. 打开 B 的终端。
+   未安装节点时先安装 Reality + Vision 或 HY2；已有可用节点就直接使用。
+   运行 SKYBYTE Manager，选择 2 → 1「查看节点」。
+   复制红色的完整链接，例如以 vless:// 或 hysteria2:// 开头的一整条。
+2. 切换到 A 的终端。
+   进入 4 → 10「住宅落地 / VPS 中转」。
+   选择 1「导入 / 更换落地节点」，再选择 1「粘贴节点链接」。
+3. 把刚才 B 的链接粘贴进去，按回车。
+   粘贴时屏幕不会显示字符，这是隐藏输入，正常。
+4. 处理证书提示。
+   B 使用 Reality 或受信任 CA 证书的 HY2，可以直接回车。
+   B 使用 HY2 自签名证书，需要先把 B 的公开证书复制到 A，核对指纹，
+   再填写它在 A 上的文件路径。具体命令见下方。
+5. 选择 1「全部节点流量走落地」，回车使用默认值，再输入 YES 确认。
+   脚本验证 B 的连接成功后，备份并应用出站策略；导入完成时就会启用中转。
+
+最后，小火箭使用 A 的节点链接或二维码。连接成功后的路线就是：
+小火箭 → A 中转服务器 → B 住宅服务器 → 网站。
+
+仅 B 使用 HY2 自签名时：公开证书复制方法
+  在 A 通过可信 SSH/SFTP 执行（将住宅VPS_IP换成 B 的地址，默认 SSH 端口 22）：
+    scp root@住宅VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
+  SSH 端口改过时，在 scp 命令中加 -P 和实际端口。
+  通过可信通道核对两端的 SHA256 指纹：
+    B 上：openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
+    A 上：openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
+  确认指纹一致后，在 A 的证书路径提示中填写：
+    /root/landing-hy2-ca.pem
+  只复制公开证书，不要复制 B 的私钥，也不要关闭 TLS 验证。
+  B 使用其他工具部署时，按其实际公开证书路径复制。
+
+准备与检查：
+  为保留住宅 IP，B 的出站保持直连；若开启过 WARP，先切回直连。
+  放行 A 到 B 的实际协议端口：Reality 使用 TCP，HY2 使用 UDP，云防火墙也需放行。
+  如果 A 的入口也是 HY2 自签名，小火箭仍需信任 A 的公开证书。
+  在 A 选择 2「测试落地连接」，显示的出口应属于 B 的实际住宅出口。
+  再用手机测试实际访问、上传、下载和延迟。
 
 按钮说明：1 导入 / 更换；2 测试连接；3 切回全局中转；4 恢复 A 的直连出口；
           5 先恢复直连或切换 WARP，再删除保存的落地凭据；6 本说明；0 返回。
 落地失败不会自动改用 A 的出口；中转和 WARP 分流择一启用。
+也可选择指定域名模式，未匹配流量按设置直连。
 速度取决于两段链路，连接验证不能证明实际提速或住宅 IP 分类。
 RELAY_HELP_ZH
  fi

@@ -253,7 +253,7 @@ Restore retains current account policy/usage and current subscription tokens. HT
 
 ```bash
 python3 scripts/build.py --check
-python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.1
+python3 scripts/package_release.py --output /tmp/skybyte-release-2.6.2
 ```
 
 Packaging includes only install.sh, the full bundle, public rule catalog and SHA256SUMS, never runtime state or credentials.
@@ -273,15 +273,50 @@ SING_BOX_BIN=/path/to/sing-box python3 scripts/benchmark_users.py \
 
 Menu **4 → 10: Residential landing / VPS relay**, then **6 Usage guide**, shows the setup steps and certificate-copy/fingerprint commands even before importing a landing node. It supports a residential-IP VPS with a poor direct route from mainland China by using an entry VPS with a better client-facing route:
 
+**Copy the residential server's node URI into the entry server's manager. Your phone connects to the entry server.**
+
+First identify the two servers:
+
+- **A: entry server.** Your phone connects to A.
+- **B: residential IP server.** B accesses websites; websites see B's residential exit IP.
+
+**Both servers need working nodes.** Open a separate SSH terminal for each server. Keep B's egress direct to retain the residential exit; disable WARP routing on B if active. Allow B's actual node port from A: TCP for Reality, UDP for HY2, including the provider firewall.
+
+1. **Open B's terminal.** Install **Reality + Vision** or **HY2** if needed; an existing working node is fine. In SKYBYTE Manager, select **2 → 1 View nodes**. Copy one complete red URI beginning with `vless://` or `hysteria2://`.
+2. **Switch to A's terminal.** Open **4 → 10 Residential landing / VPS relay**. Select **1 Import / replace landing**, then **1 Paste node URI**.
+3. **Paste B's URI and press Enter.** Hidden input displays no characters while pasting; this is expected.
+4. **Handle the certificate prompt.** For Reality or HY2 with a trusted CA certificate, press Enter. For self-signed HY2 on B, copy **B's public certificate to A**, verify its fingerprint and enter its file path on A. See the certificate commands below.
+5. **Choose `1 All node traffic through landing`, then type `YES`.** Enter accepts the default mode. The script validates configurations and tests B's HTTPS connection and egress IP. Failure leaves existing routing; success backs up and restarts previously active admin/account/Argo nodes. Relay is enabled when import completes.
+
+**Finally, Shadowrocket uses A's node URI or QR code.** If A uses self-signed HY2, Shadowrocket still needs to trust A's public certificate. Path after connecting:
+
 ```text
-Client → entry VPS (this manager) → residential landing VPS → destination
+Shadowrocket → A entry server → B residential server → website
 ```
 
-1. Deploy **VLESS + Reality + Vision** or **Hysteria2** on the landing VPS. Its public protocol port must be reachable from the entry VPS.
-2. Keep or install the entry VPS's client-facing nodes. Through **4 → 10 → 1**, import one landing URI: standard VLESS/HY2 and this project's native Shadowrocket Reality links are supported. A sing-box JSON containing exactly one proxy outbound also works. Remote subscriptions and imported executable directives are not processed.
-3. For self-signed HY2, retrieve the public certificate over trusted SSH/SFTP, verify its fingerprint and supply the certificate file, or import JSON containing that public certificate. A `pinSHA256` URI requires matching public trust material. Insecure TLS options are rejected; never supply a server private key.
-4. **All node traffic through the landing** is the default. Alternatively, select domain suffixes while other traffic stays direct. Confirmation validates configurations and tests HTTPS forwarding/egress IP through the landing before applying. Failure leaves existing routing; success backs up and restarts previously active admin/account/Argo nodes.
-5. Clients retain their entry VPS URIs, certificate trust, names and QR codes; destinations see the landing's final egress IP. Account quotas, expiry and usage are still managed independently on the entry VPS. Landing passwords/UUIDs are not included in client exports or personal subscriptions.
+On A, select **2 Test landing**: the reported egress should belong to B's residential connection. Test actual access, uploads/downloads and latency on the phone.
+
+**Only for self-signed HY2 on B: public certificate transfer.** Run on A over trusted SSH/SFTP (replace `LANDING_VPS_IP` with B's address; SSH defaults to port 22; for another port, add `-P` with that port to `scp`):
+
+```bash
+scp root@LANDING_VPS_IP:/etc/singbox-v2/hy2-client-ca.pem /root/landing-hy2-ca.pem
+```
+
+Compare SHA256 fingerprints through a trusted channel. Run on B:
+
+```bash
+openssl x509 -in /etc/singbox-v2/hy2-client-ca.pem -noout -fingerprint -sha256
+```
+
+Run on A:
+
+```bash
+openssl x509 -in /root/landing-hy2-ca.pem -noout -fingerprint -sha256
+```
+
+After confirming they match, enter `/root/landing-hy2-ca.pem` at A's certificate prompt. Never copy B's private key or disable TLS verification. If B uses another deployment tool, copy from its actual public certificate path.
+
+Standard VLESS/HY2 and this project's native Shadowrocket Reality links are supported. A sing-box JSON containing exactly one proxy outbound also works, including embedded public trust material. Remote subscriptions and imported executable directives are not processed. A `pinSHA256` URI requires a matching certificate; insecure TLS options are rejected. Account quotas, expiry and usage remain independently managed on A. B's passwords/UUIDs are not included in client exports or personal subscriptions.
 
 Controls include connection tests, global relay, direct restoration and deletion of saved landing credentials. **Landing failures do not automatically fall back to the entry VPS exit.** In selected-domain mode, unmatched traffic stays direct by choice. Explicit direct restoration exposes the entry VPS egress IP. Relay and WARP are alternative policies: selecting one replaces the other's active routing. This feature does not chain WARP or add a generic SOCKS5/HTTP upstream configuration.
 
