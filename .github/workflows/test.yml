@@ -16,7 +16,7 @@ jobs:
       - name: Install test tools
         run: |
           apt-get update
-          apt-get install -y bash curl ca-certificates git python3 python3-yaml openssl shellcheck perl
+          apt-get install -y bash curl ca-certificates git python3 python3-yaml openssl shellcheck perl gnupg
       - uses: actions/checkout@v4
       - name: Bash syntax and ShellCheck
         run: |
@@ -24,6 +24,18 @@ jobs:
           bash singbox-v2.sh --self-check
           for file in install.sh singbox-v2.sh src/*.sh; do bash -n "$file"; done
           shellcheck install.sh singbox-v2.sh
+      - name: Verify official WARP CLI command schema (no registration)
+        shell: bash
+        run: |
+          source /etc/os-release
+          curl -fsSL --proto '=https' --max-time 30 https://pkg.cloudflareclient.com/pubkey.gpg -o /tmp/warp-key
+          gpg --batch --dearmor --output /usr/share/keyrings/skybyte-warp-ci.gpg /tmp/warp-key
+          printf 'deb [signed-by=/usr/share/keyrings/skybyte-warp-ci.gpg] https://pkg.cloudflareclient.com/ %s main\n' "$VERSION_CODENAME" > /etc/apt/sources.list.d/skybyte-warp-ci.list
+          apt-get update
+          apt-get install -y cloudflare-warp
+          warp-cli mode --help
+          warp-cli proxy port --help
+          warp-cli registration new --help
       - name: Download pinned protocol engines
         shell: bash
         run: |

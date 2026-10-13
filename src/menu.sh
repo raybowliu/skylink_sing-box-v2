@@ -39,18 +39,16 @@ sub_menu(){
    say ' 4. 启用 BBR + FQ' ' 4. Enable BBR + FQ'
    say ' 5. HY2 端口跳跃' ' 5. HY2 port hopping'
    say ' 6. VPS 流量统计（vnStat）' ' 6. VPS traffic (vnStat)'
-   say ' 7. IP 信息' ' 7. IP information'
-   say ' 8. 基础网络诊断' ' 8. Basic network checks'
-   say ' 9. HY2 / 小火箭连接诊断' ' 9. HY2 / Shadowrocket checks'
-   prompt_options '10. 进程、内存与负载' '10. Processes, memory and load'
+   say ' 7. 进程、内存与负载' ' 7. Processes, memory and load'
+   say ' 8. 流媒体可用性检测' ' 8. Streaming availability tests'
+   say ' 9. WARP 出站与分流' ' 9. WARP egress and routing'
    ;;
   5)
    say ' 1. 手动更新 sing-box' ' 1. Update sing-box'
-   say ' 2. 每周自动更新' ' 2. Weekly automatic updates'
-   say ' 3. 备份配置' ' 3. Back up configuration'
-   say ' 4. 恢复配置' ' 4. Restore configuration'
-   say ' 5. 检查 / 更新 SKYBYTE Manager 管理脚本' ' 5. Check / update SKYBYTE Manager script'
-   say ' 6. HY2 证书检查与续签重载' ' 6. HY2 certificate checks and renewal reload'
+   say ' 2. 备份配置' ' 2. Back up configuration'
+   say ' 3. 恢复配置' ' 3. Restore configuration'
+   say ' 4. 检查 / 更新 SKYBYTE Manager 管理脚本' ' 4. Check / update SKYBYTE Manager script'
+   say ' 5. HY2 证书检查与续签重载' ' 5. HY2 certificate checks and renewal reload'
    ;;
   6)
    say ' 1. 切换语言' ' 1. Change language'
@@ -80,16 +78,14 @@ sub_menu(){
   4:4) MAIN_ACTION=bbr;;
   4:5) MAIN_ACTION=hop;;
   4:6) MAIN_ACTION=traffic;;
-  4:7) MAIN_ACTION=ip;;
-  4:8) MAIN_ACTION=network;;
-  4:9) MAIN_ACTION=hy2_check;;
-  4:10) MAIN_ACTION=resources;;
+  4:7) MAIN_ACTION=resources;;
+  4:8) MAIN_ACTION=media;;
+  4:9) MAIN_ACTION=warp;;
   5:1) MAIN_ACTION=update;;
-  5:2) MAIN_ACTION=auto;;
-  5:3) MAIN_ACTION=backup;;
-  5:4) MAIN_ACTION=restore;;
-  5:5) MAIN_ACTION=manager_update;;
-  5:6) MAIN_ACTION=certificate;;
+  5:2) MAIN_ACTION=backup;;
+  5:3) MAIN_ACTION=restore;;
+  5:4) MAIN_ACTION=manager_update;;
+  5:5) MAIN_ACTION=certificate;;
   6:1) MAIN_ACTION=language;;
   6:2) MAIN_ACTION=notice;;
   6:3) MAIN_ACTION=uninstall;;
@@ -102,15 +98,16 @@ dispatch_action(){
  argo) argo_manager;; nodes) exports;; subscription) subscription;; rename) rename_node;; qr) shadowrocket_qr;; users) users_manager;;
  service) service_manager;; logs) journalctl -u sing-box -n 80 --no-pager;; argo_status) argo_status;;
  initialize) initialize_server;; firewall) firewall;; audit) firewall_audit;; bbr) bbr;; hop) hop;; traffic) traffic;;
- ip) ipcheck;; network) netcheck;; hy2_check) hy2_diagnostics;;
+ media) media_check;; warp) warp_menu;;
  manager_update) manager_update;; certificate) certificate_menu;; resources) resource_info;;
- update) update;; auto) configure_auto;; backup) backup;; restore) restore;;
+ update) update;; backup) backup;; restore) restore;;
  language) select_language && startup_info;; notice) notice;; uninstall) uninstall_manager;;
  esac
 }
 main(){
  need_root; require_cmd flock
  local group action_status
+ retire_auto_update || return 1
  startup_info
  while :; do
   printf '%s\n==============================================\n' "$CYAN"
@@ -126,7 +123,7 @@ main(){
 LOGO
   printf '==============================================%s\n' "$RESET"
   printf '%s' "$GREEN"
-  say ' 1. 协议安装与 Argo 隧道' ' 1. Protocol installation and Argo tunnels'
+  say ' 1. 节点安装' ' 1. Install nodes'
   say ' 2. 节点与订阅' ' 2. Nodes and subscriptions'
   say ' 3. 服务与日志' ' 3. Services and logs'
   say ' 4. 服务器与网络' ' 4. Server and network'

@@ -35,7 +35,7 @@ The regression suite invokes actual Bash functions with isolated filesystem path
 - External TLS backup/restore and update rejection/rollback.
 - SSH detection, UFW allow rules, UDP audit and hopping systemd persistence.
 - Initialization, BBR/FQ, daily/monthly vnStat and service restart config checks.
-- Weekly update manager executable and timer generation.
+- Legacy owned weekly-timer retirement and private unit backups.
 - Matching release digest accepted; corrupted digest rejected without replacing target.
 - Real sing-box client → HY2 server → local HTTP forwarding; removing certificate trust fails.
 - Real Mihomo YAML validation and Mihomo client → sing-box HY2 server → local HTTP forwarding.
@@ -56,13 +56,13 @@ Without engine paths, engine-specific tests are skipped. PyYAML is required for 
 
 No production VPS was provided. The automated suite does not claim to test real apt upgrades, systemd boot persistence, kernel BBR behavior, UFW/nftables packet processing, provider firewalls or Shadowrocket/v2rayN GUI imports.
 
-On a disposable Ubuntu/Debian VPS, verify all three installation modes, real certificate chain validation, trusted self-signed client imports, IPv4 hopping through UFW and cloud security groups, weekly timer execution, restart/restore failure handling and reboots. Keep provider console access and a snapshot throughout. These checks should precede production rollout.
+On a disposable Ubuntu/Debian VPS, verify all three installation modes, real certificate chain validation, trusted self-signed client imports, IPv4 hopping through UFW and cloud security groups, legacy timer retirement, restart/restore failure handling and reboots. Keep provider console access and a snapshot throughout. These checks should precede production rollout.
 
 ## Shadowrocket follow-up
 
 Added per-protocol separators, translated trust notes, PEM/DER public certificate exports and iOS root profiles for CA certificates. Profiles contain no passwords or private keys. Leaf-only certificates do not get root profiles, and stale trust exports are removed. Existing server certificates and credentials are preserved.
 
-Menu 4 → 9 checks configuration, service, actual UDP listener, certificate identity/key/expiry and UFW. It prints timeout/auth/trust guidance without printing node passwords. Tests cover profile schema, public DER content, CA-versus-leaf behavior, translated separators, changed ports and stopped services.
+The earlier Menu 4 → 9 checked configuration, service, actual UDP listener, certificate identity/key/expiry and UFW; that diagnostic menu is removed in V2.4. It prints timeout/auth/trust guidance without printing node passwords. Tests cover profile schema, public DER content, CA-versus-leaf behavior, translated separators, changed ports and stopped services.
 
 User evidence confirms an active sing-box service and a UDP 443 listener. This does not establish external UDP reachability or client TLS trust. Shadowrocket screenshots show TLS enabled but not its inner trust settings. The user later reported working connectivity; the exact cause of the earlier failure was not established.
 
@@ -72,7 +72,7 @@ Menu 6 → 3 requires confirmation and a successful backup before removing owned
 
 ## Client-specific exports
 
-Terminal sections show v2rayN URIs, full Clash Verge/Mihomo YAML, full sing-box client JSON and Shadowrocket local Base64 subscriptions, each separated with dashed lines. Legacy exports remain. New exports are private files, carry only installed protocols, retain verified TLS trust and are removed during managed uninstall. YAML/JSON are checked by actual Mihomo/sing-box binaries for all three protocol combinations. Real HY2 forwarding tests now load the complete generated client configurations, rather than constructing their own client routing. No Shadowrocket/v2rayN GUI compatibility claim is made.
+Terminal sections show v2rayN URIs, full Clash Verge/Mihomo YAML, full sing-box client JSON and Shadowrocket native links (V2.3.1 removes the duplicate Base64 display), each separated with dashed lines. Legacy exports remain. New exports are private files, carry only installed protocols, retain verified TLS trust and are removed during managed uninstall. YAML/JSON are checked by actual Mihomo/sing-box binaries for all three protocol combinations. Real HY2 forwarding tests now load the complete generated client configurations, rather than constructing their own client routing. No Shadowrocket/v2rayN GUI compatibility claim is made.
 
 ## Custom names and output colors
 
@@ -111,3 +111,14 @@ The source modules are assembled with `python3 scripts/build.py`. CI requires `p
 ## V2.3.1 interaction styling and exports
 
 93 tests passed after centralizing interactive prompts and selection hints, including unchanged confirmation/input behavior and native-link/QR exports. Updated export checks require the native Shadowrocket section and reject the removed duplicate Base64 display section. A manual pseudo-terminal check verified bold green prompts/options, reset before typed input, hidden token entry, mixed-case YES, and NO_COLOR plain output. Compatibility files remain on disk. All Bash source syntax, generated-bundle consistency and ShellCheck checks passed.
+
+
+## V2.4 WARP, media probes and menu cleanup
+
+Local result: all 128 tests passed (93 prior cases plus 35 network-feature cases), including the real encrypted gateway forwarding tests. Generated-bundle consistency, rootless self-check, Bash syntax, ShellCheck 0.11.0 and `git diff --check` passed. It covers anonymous-page evidence classification, HTTP 200 remaining unknown, explicit restrictions, challenges/denials/timeouts, TLS/proxy/address-family flags, private secret-free reports, all three WARP modes, unchanged node credentials and individual quotas, newly added user/Argo inheritance, custom-route/symlink refusal, candidate validation before writes, route rollback on failed restart, backup reconciliation for post-snapshot accounts, native gateway profile/ownership guards, gateway restore/import rollback, external-profile retention on uninstall, signed apt/modern WARP CLI installation through mocks, and exact trace-family validation.
+
+Real sing-box processes verify that only a selected domain traverses a shared local SOCKS proxy, that HY2 account traffic remains independently metered while using it, and that two encrypted WireGuard peers carry IPv4 HTTP, IPv6 HTTP and UDP echo through one shared gateway. All peers/listeners stay on loopback; benchmark destination addresses are overridden at the local peer and no customer traffic is sent. SOCKS tests include fragmented responses and TCP-only rejection. The hopping tests check actual non-443 HY2 targets, large-range exports, account conflicts, changed unit ownership, failed enable/partial-rule cleanup and preservation of unrelated nftables tables when uninstalling an iptables deployment.
+
+The four requested menu entries are removed and both languages renumbered. Owned legacy update units are privately backed up and retired; foreign units remain. YouTube invitations are checked immediately after the channel link. IPv6 URI authorities and IP SAN verification have regression coverage.
+
+CI additionally installs the official Cloudflare signed package on Ubuntu 24.04 and Debian 12 to inspect modern CLI help schemas without registration, terms acceptance or connection. Official installation and systemd/UFW/NAT mutations use mocks in the regression suite. Local encrypted WireGuard coverage establishes forwarding behavior, not real Cloudflare account acceptance, egress availability or media unlocking. Anonymous probes never claim actual playback, full catalogs, account/payment eligibility or AI availability. Real provider UDP rules, systemd persistence, WARP service registration/dual-stack and media playback still require a disposable VPS deployment.

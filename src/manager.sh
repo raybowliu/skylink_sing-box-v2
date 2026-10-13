@@ -5,7 +5,7 @@
 set -Eeuo pipefail
 umask 077
 SCRIPT_PATH="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/$(basename -- "${BASH_SOURCE[0]}")"
-MANAGER_VERSION=2.3.2
+MANAGER_VERSION=2.4.0
 BASE=/etc/singbox-v2
 CONF=/etc/sing-box/config.json
 SYSTEMD_DIR=/etc/systemd/system
@@ -18,6 +18,8 @@ REPORT=$BASE/reports
 BACKUP=$BASE/backups
 BIN=/usr/local/bin/sing-box
 LOCK=/run/singbox-v2.lock
+WARP_REPO_FILE=/etc/apt/sources.list.d/skybyte-cloudflare-warp.list
+WARP_KEY_FILE=/usr/share/keyrings/skybyte-cloudflare-warp.gpg
 
 # Language preference is independent of sing-box configuration.
 LANG_FILE="$BASE/language.conf"
@@ -85,7 +87,7 @@ startup_info(){
  if command -v nginx >/dev/null; then nginx=true; fi
  printf '%s\n----------------------------------------------\n' "$GREEN"
  say "脚本版本：SKYBYTE Manager v$MANAGER_VERSION" "Script version: SKYBYTE Manager v$MANAGER_VERSION"
- say '功能更新：管理脚本更新、用户诊断、证书监控与资源统计' 'Features: manager updates, user diagnostics, certificate monitoring and resources'
+ say '功能更新：流媒体检测、WARP 分流与双栈检测、可选 iptables 端口跳跃' 'Features: streaming probes, WARP routing/dual-stack tests, optional iptables hopping'
  say '系统信息：' 'System information:'
  printf '  %s: %s\n' "$(L '操作系统' 'OS')" "$os" "$(L '内核' 'Kernel')" "$kernel" "$(L '处理器架构' 'Architecture')" "$arch" "$(L '虚拟化' 'Virtualization')" "$virtual"
  printf '  IPv4: %s\n  IPv6: %s\n' "${ipv4:-$(L '未检测到' 'Not detected')}" "${ipv6:-$(L '未检测到' 'Not detected')}"
@@ -101,12 +103,12 @@ startup_info(){
 
 notice(){ if [[ "$LANGUAGE_CHOICE" == en_US ]]; then cat <<'EOF_EN'
 [LEGAL & PRIVACY NOTICE] Use only for lawful networking education and server administration. You must comply with applicable law and service terms. Updating software or changing firewall/network settings may interrupt service or cause data loss; make backups first. Provided as-is to the extent permitted by law. Third-party components retain their licenses.
-Installation and updates can contact github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org for your public IPv4. The optional IP report queries ipinfo.io, which may retain your IP and request metadata; reports are stored locally in /etc/singbox-v2/reports and deleted after 30 days. No developer telemetry and no intentional upload of node credentials. Auto-update is opt-in. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
+Installation and updates can contact github.com, api.github.com and GitHub release CDNs; these services can see your source IP. Installation queries api.ipify.org/api64.ipify.org for your public address. Optional streaming probes contact the selected platforms; WARP installation/tests contact Cloudflare. Those services can see the egress IP and request metadata. Reports stay local in /etc/singbox-v2/reports; manage retention yourself. WARP sends selected traffic through Cloudflare. No developer telemetry or intentional upload of node credentials. Weekly automatic updates have been removed. HY2 requires TLS. A no-domain self-signed certificate mode is available, but clients must securely trust the certificate.
 Optional Argo connects to Cloudflare, which terminates outer TLS and can inspect WebSocket payloads. Tunnel tokens are stored locally and included in private backups.
 EOF_EN
 else cat <<'EOF'
 【法律与隐私披露】此工具仅供合法网络技术学习和服务器管理；使用者应遵守适用法律和服务条款。更改防火墙、网络参数及更新软件可能导致中断或损失，请提前备份。软件按现状提供，不排除依法不得排除的责任。第三方软件遵循其许可证。
-安装/更新可能连接：github.com、api.github.com、GitHub 发布文件 CDN，访问服务会暴露请求来源 IP。安装时 api.ipify.org 用于识别出口 IP。可选 IP 检测使用 ipinfo.io，报告保存在本地 /etc/singbox-v2/reports，默认保留 30 天；第三方可能记录来源 IP、查询目标和请求时间。无开发者遥测或上传节点密钥；请勿公开包含凭据的配置和导出文件。自动更新默认关闭。HY2 必须有 TLS 证书，无域名用户可生成自签名证书，客户端必须正确配置信任，不能默认跳过证书验证。
+安装/更新可能连接：github.com、api.github.com、GitHub 发布文件 CDN，访问服务会暴露请求来源 IP。安装时 api.ipify.org/api64.ipify.org 用于识别公网地址；可选流媒体检测访问对应平台，WARP 安装/检测访问 Cloudflare。第三方可能记录出口 IP、查询目标和请求时间。报告保存在本地 /etc/singbox-v2/reports，请自行清理。WARP 将选定流量交由 Cloudflare 转发。无开发者遥测或上传节点密钥；请勿公开包含凭据的配置和导出文件。每周自动更新已移除。HY2 必须有 TLS 证书，无域名用户可生成自签名证书，客户端必须正确配置信任，不能默认跳过证书验证。
 可选 Argo 连接 Cloudflare，外层 TLS 在其边缘终止，可检查 WebSocket 载荷。隧道 Token 保存在本地并包含在私密备份中。
 EOF
 fi
@@ -133,15 +135,19 @@ check_owned(){ [[ -f $META && -f $CONF ]] || { err "$(L '未发现由本脚本�
 backup(){
  check_owned || return 1
  local path file
- users_guard || return 1
+ users_guard && warp_guard || return 1
  path="$BACKUP/$(date +%Y%m%d-%H%M%S)-$RANDOM"
  mkdir -m 700 "$path" || return 1; cp -a "$(dirname "$CONF")" "$path/config" || return 1
  cp "$META" "$path/state.json" || return 1
  cp "$BIN" "$path/sing-box.bin" || return 1
  if [[ -f "$BASE/hop.nft" ]]; then cp "$BASE/hop.nft" "$path/hop.nft" || return 1; fi
- for file in argo-state.json argo-server.json argo-empty.yml argo.token; do
+ for file in argo-state.json argo-server.json argo-empty.yml argo.token warp-state.json warp-gateway.json warp-client.json hop-iptables.sh; do
   if [[ -f $BASE/$file ]]; then cp "$BASE/$file" "$path/$file" || return 1; fi
  done
+ if [[ -f $SYSTEMD_DIR/skybyte-warp-gateway.service ]]; then
+  cp "$SYSTEMD_DIR/skybyte-warp-gateway.service" "$path/warp-gateway.unit" || return 1
+  if systemctl is-active --quiet skybyte-warp-gateway.service; then echo true > "$path/warp-gateway-active"; else echo false > "$path/warp-gateway-active"; fi
+ fi
  if [[ -f $BASE/argo-state.json && -f $BASE/cloudflared ]]; then cp "$BASE/cloudflared" "$path/cloudflared.bin" || return 1; fi
  python3 - "$path" "$CONF" <<'PY' || return 1
 import json,sys,shutil,pathlib
@@ -162,7 +168,12 @@ PY
 validate_certificate(){
  local cert=$1 key=$2 name=$3 certpub keypub
  LC_ALL=C openssl x509 -in "$cert" -noout -checkend 0 >/dev/null || { err "$(L '证书无效或已过期' 'Certificate invalid or expired')"; return 1; }
- if [[ $name =~ ^[0-9.]+$ ]]; then
+ if python3 - "$name" <<'PY_NAME_IP'
+import ipaddress,sys
+try:ipaddress.ip_address(sys.argv[1])
+except ValueError:sys.exit(1)
+PY_NAME_IP
+ then
   LC_ALL=C openssl x509 -in "$cert" -noout -checkip "$name" | grep -q "does match" || { err "$(L '证书 IP 不匹配' 'Certificate IP does not match')"; return 1; }
  else
   LC_ALL=C openssl x509 -in "$cert" -noout -checkhost "$name" | grep -q "does match" || { err "$(L '证书域名不匹配' 'Certificate hostname does not match')"; return 1; }
@@ -248,7 +259,8 @@ write_config(){
 import json,sys
 conf,meta,domain,cert,key,sni,uuid,priv,pub,sid,password,ip,mode,cert_mode=sys.argv[1:15]
 node_name=sys.argv[15] if len(sys.argv)>15 else 'SKYBYTE'
-d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':'0.0.0.0','listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
+listen='::' if ':' in ip else '0.0.0.0'
+d={'log':{'level':'info','timestamp':True},'inbounds':[{'type':'vless','tag':'reality','listen':listen,'listen_port':443,'users':[{'name':'user1','uuid':uuid,'flow':'xtls-rprx-vision'}],'tls':{'enabled':True,'server_name':sni,'reality':{'enabled':True,'handshake':{'server':sni,'server_port':443},'private_key':priv,'short_id':[sid]}}},{'type':'hysteria2','tag':'hy2','listen':listen,'listen_port':443,'users':[{'name':'user1','password':password}],'tls':{'enabled':True,'server_name':domain,'certificate_path':cert,'key_path':key}}],'outbounds':[{'type':'direct','tag':'direct'}],'route':{'final':'direct'}}
 if mode=='1': d['inbounds']=d['inbounds'][:1]
 elif mode=='2': d['inbounds']=d['inbounds'][1:]
 with open(conf,'w') as f:json.dump(d,f,indent=2)
@@ -293,7 +305,7 @@ install_protocol(){
   [[ $sni =~ ^[a-zA-Z0-9.-]+$ ]] || { err "$(L '无效 SNI' 'Invalid SNI')"; return 1; }
  fi
  say '安装依赖...' 'Installing dependencies...'; apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl ca-certificates python3 iproute2 util-linux nftables procps || return 1
- require_cmd getent; getent ahostsv4 github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS' 'GitHub DNS lookup failed; fix DNS first')"; return 1; }
+ require_cmd getent; getent ahosts github.com >/dev/null || { err "$(L 'GitHub DNS 解析失败，请先修复 DNS' 'GitHub DNS lookup failed; fix DNS first')"; return 1; }
  mkdir -p "$(dirname "$BIN")"
  if [[ $cert_mode == 2 ]]; then validate_certificate "$cert" "$key" "$domain" || return 1; fi
  download_binary "$(latest)" "$BIN" || { err "$(L '官方安装失败' 'Release installation failed')"; return 1; }
@@ -304,7 +316,7 @@ install_protocol(){
  priv=$(sed -n 's/^PrivateKey: *//p' <<<"$pair"); pub=$(sed -n 's/^PublicKey: *//p' <<<"$pair")
  [[ -n $priv && -n $pub ]] || { err "$(L 'Reality 密钥生成失败' 'Reality key generation failed')"; return 1; }; fi
  sid=$(openssl rand -hex 4); passwd=$(openssl rand -hex 16)
- ip=$(curl -4fsS --max-time 15 https://api.ipify.org) || { err "$(L '公网 IPv4 查询失败' 'Public IPv4 lookup failed')"; return 1; }
+ ip=$(curl -q -4fsS --noproxy '*' --max-time 12 https://api.ipify.org) || ip=$(curl -q -6fsS --noproxy '*' --max-time 12 https://api64.ipify.org) || { err "$(L '公网 IP 查询失败' 'Public IP lookup failed')"; return 1; }
  python3 - "$ip" <<'PY' || return 1
 import ipaddress,sys
 assert ipaddress.ip_address(sys.argv[1]).is_global
@@ -330,41 +342,9 @@ PY
 }
 # @include subscriptions.sh
 
-hop(){ check_owned || return; [[ "$(protocol_mode)" != 1 ]] || { err "$(L '未安装 HY2' 'HY2 not installed')"; return 1; }; require_cmd nft || return 1; say '端口跳跃仅支持 IPv4，规则通过专属 systemd 服务持久化。请同步修改云防火墙。' 'Port hopping is IPv4 only and uses a dedicated systemd service. Also configure your provider firewall.'; prompt_options '1 开启  2 关闭' '1 Enable  2 Disable'; prompt_read '> ' choice
- if [[ $choice == 2 ]]; then confirm "$(L '关闭端口跳跃？' 'Disable HY2 port hopping?')" && { systemctl disable --now singbox-v2-hop.service 2>/dev/null || :; hop_disable; }; return; fi
- [[ $choice == 1 ]] || return 0
- prompt_read "$(L '起始端口 [20000]: ' 'Start port [20000]: ')" start; start=${start:-20000}; prompt_read "$(L '结束端口 [30000]: ' 'End port [30000]: ')" end; end=${end:-30000}
- if ! valid_port "$start" || ! valid_port "$end" || ! (( 10#$start<=10#$end && 10#$start>=1024 && 10#$end-10#$start<=10000 )); then err "$(L '端口范围非法（最多10001个）' 'Invalid range (maximum 10001 ports)')"; return 1; fi
- start=$((10#$start)); end=$((10#$end))
- if [[ -f $BASE/users.json ]]; then users_guard && users_engine hop_check "$start" "$end" || return 1; fi
- confirm "$(L "启用 UDP $start-$end 转发到 443？" "Forward UDP $start-$end to 443?")" || return 0
- nft list table ip singbox_v2_hop >/dev/null 2>&1 && { err "$(L '已存在端口跳跃规则，请先关闭' 'Hopping table exists; disable it first')"; return 1; }
- cat >"$SYSTEMD_DIR/singbox-v2-hop.service" <<EOF
-[Unit]
-Description=singbox V2 HY2 IPv4 port hopping
-After=network-online.target
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/usr/sbin/nft -f $BASE/hop.nft
-ExecStop=/usr/sbin/nft delete table ip singbox_v2_hop
-[Install]
-WantedBy=multi-user.target
-EOF
- cat >"$BASE/hop.nft" <<EOF
-add table ip singbox_v2_hop
-add chain ip singbox_v2_hop prerouting { type nat hook prerouting priority dstnat; policy accept; }
-add rule ip singbox_v2_hop prerouting udp dport $start-$end redirect to :443
-EOF
- systemctl daemon-reload; systemctl enable --now singbox-v2-hop.service || { err "$(L '开启失败' 'Enable failed')"; return 1; }
- if command -v ufw >/dev/null && LC_ALL=C ufw status | grep -q '^Status: active'; then ufw allow "$start:$end/udp"; warn "$(L '关闭跳跃后请按需要手动删除 UFW 范围规则' 'After disabling hopping, remove UFW range rules manually if needed')"; fi
- python3 - "$META" "$start" "$end" <<'PY'
-import json,sys
-p=sys.argv[1];d=json.load(open(p));d.update(hop=True,hop_start=int(sys.argv[2]),hop_end=int(sys.argv[3]))
-with open(p,'w') as f:json.dump(d,f,indent=2)
-PY
- say '已启用。请在客户端配置 server_ports 和 hop_interval=30s' 'Enabled. Configure server_ports and hop_interval=30s on clients'; }
-latest(){ curl -4fsSL --max-time 25 https://api.github.com/repos/SagerNet/sing-box/releases/latest | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d.get("prerelease") and not d.get("draft"); print(d["tag_name"].lstrip("v"))'; }
+# @include hopping.sh
+
+latest(){ curl -fsSL --max-time 25 https://api.github.com/repos/SagerNet/sing-box/releases/latest | python3 -c 'import json,sys; d=json.load(sys.stdin); assert not d.get("prerelease") and not d.get("draft"); print(d["tag_name"].lstrip("v"))'; }
 update(){
  check_owned || return 1
  local new current
@@ -376,6 +356,7 @@ update(){
 }
 managed_restart(){
  local argo_active=false tunnel_active=false users_active=false
+ if [[ -f $BASE/warp-gateway.json ]] && systemctl is-active --quiet skybyte-warp-gateway.service; then systemctl restart skybyte-warp-gateway.service && systemctl is-active --quiet skybyte-warp-gateway.service || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-node.service ]] && systemctl is-active --quiet skybyte-argo-node.service; then argo_active=true; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-tunnel.service ]] && systemctl is-active --quiet skybyte-argo-tunnel.service; then tunnel_active=true; fi
  if [[ -f $BASE/users.json ]] && systemctl is-active --quiet skybyte-users.service; then users_guard || return 1; users_active=true; fi
@@ -391,47 +372,35 @@ apply_update(){
  candidate=$(mktemp "$BASE/sing-box.candidate.XXXXXX") || return 1
  snap=$(backup) || { rm -f "$candidate"; return 1; }
  download_binary "$new" "$candidate" || { rm -f "$candidate"; return 1; }
+ if [[ -f $BASE/warp-gateway.json ]]; then "$candidate" check -c "$BASE/warp-gateway.json" || { rm -f "$candidate"; return 1; }; fi
  "$candidate" check -c "$CONF" || { rm -f "$candidate"; return 1; }
  if [[ -f $BASE/argo-server.json ]]; then "$candidate" check -c "$BASE/argo-server.json" || { rm -f "$candidate"; return 1; }; fi
  if [[ -f $BASE/users.json ]]; then if ! users_guard || ! users_engine validate "$candidate"; then rm -f "$candidate"; return 1; fi; fi
  command install -m 755 "$candidate" "$BIN" || return 1; rm -f "$candidate"
  if ! managed_restart; then
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '更新失败，已恢复原二进制' 'Update failed; original binary restored')"; return 1
  fi
  ok "$(L '更新完成，请检查客户端连接' 'Updated; verify client connectivity')"
 }
 service_healthy(){ sleep 2; systemctl is-active --quiet sing-box; }
-update_auto(){
- check_owned || return 1
- local current new
- current=$("$BIN" version | awk 'NR==1{print $3}'); new=$(latest) || return 1
- [[ $current == "$new" ]] || apply_update "$new"
+retire_auto_update(){
+ local unit timer saved
+ unit=$SYSTEMD_DIR/singbox-v2-update.service;timer=$SYSTEMD_DIR/singbox-v2-update.timer
+ [[ -e $unit || -e $timer || -L $unit || -L $timer ]] || return 0
+ if [[ -L $unit || -L $timer ]] || { [[ -f $unit ]] && { ! grep -Fxq 'Description=sing-box v2 weekly update' "$unit" || ! grep -Fxq "ExecStart=/bin/bash $MANAGER_BIN --auto-update" "$unit"; }; } || { [[ -f $timer ]] && ! grep -Fxq 'Description=sing-box v2 weekly update timer' "$timer"; }; then
+  warn "$(L '旧更新服务归属异常，保留不修改' 'Legacy update unit ownership mismatch; retained')"; return 0
+ fi
+ mkdir -p "$BASE/manager-backups"
+ saved=$(mktemp -d "$BASE/manager-backups/legacy-auto.XXXXXX") || return 1
+ [[ ! -f $unit ]] || cp "$unit" "$saved/" || return 1
+ [[ ! -f $timer ]] || cp "$timer" "$saved/" || return 1
+ [[ ! -f $timer ]] || systemctl disable --now singbox-v2-update.timer || return 1
+ [[ ! -f $unit ]] || systemctl stop singbox-v2-update.service || return 1
+ rm -f "$unit" "$timer";systemctl daemon-reload || return 1
+ say "已停用旧每周更新，服务文件备份：$saved" "Legacy weekly updater retired; unit backups: $saved"
 }
-configure_auto(){ need_root; prompt_options '1 启用每周自动更新  2 关闭' '1 Enable weekly automatic updates  2 Disable'; prompt_read '> ' x
- if [[ $x == 1 ]]; then
- check_owned || return 1
- warn "$(L '自动更新会短暂中断服务；请保留备份' 'Automatic updates briefly interrupt service; retain backups')"
- cat >"$SYSTEMD_DIR/singbox-v2-update.service" <<EOF
-[Unit]
-Description=sing-box v2 weekly update
-After=network-online.target
-[Service]
-Type=oneshot
-ExecStart=/bin/bash $MANAGER_BIN --auto-update
-EOF
- cat >"$SYSTEMD_DIR/singbox-v2-update.timer" <<'EOF'
-[Unit]
-Description=sing-box v2 weekly update timer
-[Timer]
-OnCalendar=Sun *-*-* 04:00:00
-RandomizedDelaySec=15min
-Persistent=true
-[Install]
-WantedBy=timers.target
-EOF
- command install -m 700 "$SCRIPT_PATH" "$MANAGER_BIN"; systemctl daemon-reload; systemctl enable --now singbox-v2-update.timer
- elif [[ $x == 2 ]]; then systemctl disable --now singbox-v2-update.timer 2>/dev/null || :; fi; }
+update_auto(){ warn "$(L '每周自动更新已移除，请使用手动更新' 'Weekly updates removed; use manual updates')"; }
 ipcheck(){ notice; confirm "$(L '访问 ipinfo.io 检查 IP 并保存本地报告？' 'Query ipinfo.io and save the IP report locally?')" || return 0; local stamp path; stamp=$(date +%Y%m%d-%H%M%S); path="$REPORT/ip-$stamp.json"; curl -4fsSL --max-time 20 https://ipinfo.io/json >"$path" || { rm -f "$path"; err "$(L 'IP 检测失败' 'IP lookup failed')"; return 1; }; chmod 600 "$path"; python3 -m json.tool "$path"; find "$REPORT" -type f -mtime +30 -delete; say "报告：${path}；不是风险或解锁报告" "Report: $path; not a reputation/unblocking test"; }
 netcheck(){ local stamp path; stamp=$(date +%Y%m%d-%H%M%S); path="$REPORT/net-$stamp.txt"; { echo "date=$(date -Is)"; echo 'route:'; ip route get 1.1.1.1; echo 'DNS:'; getent ahostsv4 github.com | sed -n '1,3p'; echo 'HTTP:'; curl -4 -o /dev/null -sS --max-time 15 -w 'github_https_code=%{http_code} connect=%{time_connect}s total=%{time_total}s\n' https://github.com || :; echo 'TCP listeners:'; ss -lnt '( sport = :443 )'; echo 'UDP listeners:'; ss -lnu '( sport = :443 )'; } | tee "$path"; chmod 600 "$path"; find "$REPORT" -type f -mtime +30 -delete; say '仅为基础连通性，不测三网回程、UDP 丢包或吞吐量' 'Basic connectivity only; no route-back, UDP loss or throughput testing'; }
 protocol_port(){
@@ -498,9 +467,9 @@ restore(){
  users_stop || return 1
  cp -a "$path/config/." "$(dirname "$CONF")" || return 1; cp "$path/state.json" "$META" || return 1
  command install -m 755 "$path/sing-box.bin" "$BIN" || return 1
- if ! "$BIN" check -c "$CONF" || ! systemctl restart sing-box || ! service_healthy || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path"; then
+ if ! "$BIN" check -c "$CONF" || ! warp_restore_snapshot "$path" || ! systemctl restart sing-box || ! service_healthy || ! argo_restore_snapshot "$path" || ! users_restore_snapshot "$path"; then
   cp -a "$snap/config/." "$(dirname "$CONF")"; cp "$snap/state.json" "$META"
-  command install -m 755 "$snap/sing-box.bin" "$BIN"; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
+  command install -m 755 "$snap/sing-box.bin" "$BIN"; warp_restore_snapshot "$snap" || :; systemctl restart sing-box || :; argo_restore_snapshot "$snap" || :; users_restore_snapshot "$snap" || :
   err "$(L '恢复失败，已回滚' 'Restore failed; rolled back')"; return 1
  fi
  # Hopping is host state: avoid restoring metadata claiming rules that are absent.
@@ -798,7 +767,7 @@ argo_install(){
   if [[ -f $stage/$file ]]; then mv "$stage/$file" "$BASE/$file" || { rm -rf "$stage"; return 1; }; fi
  done
  rmdir "$stage"
- if ! argo_setup_units || ! systemctl enable --now skybyte-argo-node.service || ! systemctl enable --now skybyte-argo-tunnel.service; then
+ if ! warp_reconcile || ! argo_setup_units || ! systemctl enable --now skybyte-argo-node.service || ! systemctl enable --now skybyte-argo-tunnel.service; then
   err "$(L 'Argo 启动失败；保留配置供诊断，原节点配置未改变' 'Argo startup failed; config retained for diagnosis. Existing node config was not changed')"; return 1
  fi
  if ! argo_wait; then warn "$(L '隧道尚未注册连接；请使用 Argo 状态检查 Token、路由或出站网络。' 'Tunnel not registered yet; use Argo status to check token, route or outbound connectivity.')"; return 1; fi
@@ -900,6 +869,7 @@ argo_remove_internal(){
  argo_guard || return 1
  if [[ -f $SYSTEMD_DIR/skybyte-argo-tunnel.service ]]; then systemctl disable --now skybyte-argo-tunnel.service || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-argo-node.service ]]; then systemctl disable --now skybyte-argo-node.service || return 1; fi
+ warp_engine forget_argo || return 1
  for file in argo-state.json argo-server.json argo-empty.yml argo.token cloudflared; do rm -f -- "$BASE/$file"; done
  rm -f -- "$SYSTEMD_DIR/skybyte-argo-node.service" "$SYSTEMD_DIR/skybyte-argo-tunnel.service"
  systemctl daemon-reload
@@ -943,7 +913,7 @@ argo_manager(){
 }
 
 uninstall_manager(){
- certificate_guard || return 1
+ certificate_guard && warp_guard && hop_guard || return 1
  users_guard || return 1
  need_root
  check_owned || return 1
@@ -988,11 +958,12 @@ PY
  users_stop || return 1
  if [[ -f $BASE/users.json ]]; then users_engine ledger "$snap" || return 1; fi
  users_remove || return 1
+ warp_remove || return 1
  if [[ -f $BASE/argo-state.json ]]; then argo_remove_internal || return 1; fi
  if [[ -f $SYSTEMD_DIR/singbox-v2-update.timer ]]; then systemctl disable --now singbox-v2-update.timer || return 1; fi
  if [[ -f $SYSTEMD_DIR/singbox-v2-update.service ]]; then systemctl stop singbox-v2-update.service || return 1; fi
  if [[ -f $SYSTEMD_DIR/singbox-v2-hop.service ]]; then systemctl disable --now singbox-v2-hop.service || return 1; fi
- if [[ -f $SYSTEMD_DIR/singbox-v2-hop.service ]] && command -v nft >/dev/null && nft list table ip singbox_v2_hop >/dev/null 2>&1; then nft delete table ip singbox_v2_hop || return 1; fi
+ if [[ -f $SYSTEMD_DIR/singbox-v2-hop.service ]] && grep -Fxq "ExecStart=/usr/sbin/nft -f $BASE/hop.nft" "$SYSTEMD_DIR/singbox-v2-hop.service" && command -v nft >/dev/null && nft list table ip singbox_v2_hop >/dev/null 2>&1; then nft delete table ip singbox_v2_hop || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-certificate.timer ]]; then systemctl disable --now skybyte-certificate.timer || return 1; fi
  if [[ -f $SYSTEMD_DIR/skybyte-certificate.service ]]; then systemctl stop skybyte-certificate.service || return 1; fi
  rm -f "$SYSTEMD_DIR/skybyte-certificate.timer" "$SYSTEMD_DIR/skybyte-certificate.service" "$BASE/certificate-status.json"
@@ -1000,7 +971,7 @@ PY
  # Remove explicit managed files only; never recursively delete user configuration directories.
  rm -f -- "$unit" "$SYSTEMD_DIR/singbox-v2-update.service" "$SYSTEMD_DIR/singbox-v2-update.timer" "$SYSTEMD_DIR/singbox-v2-hop.service" "$BIN" "$CONF"
  while IFS= read -r file; do if [[ -n $file ]]; then rm -f -- "$file"; fi; done <<<"$managed_certs"
- for file in state.json language.conf hop.nft nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt shadowrocket-native-nodes.txt shadowrocket-native-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
+ for file in state.json language.conf hop.nft hop-iptables.sh nodes.txt subscription-base64.txt v2rayn-nodes.txt v2rayn-subscription.txt shadowrocket-nodes.txt shadowrocket-subscription.txt shadowrocket-native-nodes.txt shadowrocket-native-subscription.txt sing-box-client.json clash-verge.yaml outbounds.json mihomo-proxies.yaml subscription-notes.txt hy2-client-ca.pem hy2-client-ca.cer hy2-client-ca.mobileconfig; do rm -f -- "$BASE/$file"; done
  # Remove executable copies only when they are identifiable manager scripts.
  for file in "$MANAGER_BIN" "$MANAGER_LIB"; do
   if [[ -f $file && ! -L $file ]] && grep -q '^# SKYBYTE Manager V2.1 community manager;' "$file"; then rm -f -- "$file"; fi
@@ -1010,5 +981,9 @@ PY
  warn "$(L 'UFW 放行规则、BBR 设置和备份中的私钥仍保留，请按需要人工管理。' 'UFW allow rules, BBR settings and backup private keys remain; manage them as needed.')"
 }
 # @include operations.sh
+
+# @include media.sh
+
+# @include warp.sh
 
 # @include menu.sh

@@ -221,7 +221,12 @@ with lock():
   if any(u['name']==n and not u.get('deleted') for u in d['users']):error('用户名已存在','User name already exists')
   template=json.load(open(conf));metadata=json.load(open(meta));supported={'vless','hysteria2'}
   require(not template.get('services') and not template.get('endpoints') and len(template['inbounds'])<=2 and len({i['type'] for i in template['inbounds']})==len(template['inbounds']))
-  if not template['inbounds'] or any(i['type'] not in supported for i in template['inbounds']) or any(o['type']!='direct' for o in template['outbounds']):error('用户功能只支持托管的 Reality/HY2 直连配置','User quotas support managed direct Reality/HY2 configs only')
+  warp_path=base/'warp-state.json';warp=None;warp_before=None
+  if warp_path.exists():
+   if warp_path.is_symlink():error('WARP 数据异常','Invalid WARP state')
+   warp=json.loads(warp_path.read_text());warp_before=copy.deepcopy(warp);require(warp.get('owner')=='SKYBYTE WARP routing v1' and warp.get('schema')==1)
+   require({k:template.get(k) for k in ('route','outbounds')}==warp['configs'][conf]['applied'])
+  if not template['inbounds'] or any(i['type'] not in supported for i in template['inbounds']) or (warp is None and any(o['type']!='direct' for o in template['outbounds'])):error('用户功能只支持托管的 Reality/HY2 配置','User quotas support managed Reality/HY2 configs only')
   uid=secrets.token_hex(8);p=userdir(uid);p.mkdir(mode=0o700)
   try:
    used={u[k] for u in d['users'] for k in ['port','api_port']}
@@ -232,7 +237,7 @@ with lock():
    template.pop('experimental',None)
    template['experimental']={'clash_api':{'external_controller':'127.0.0.1:'+str(controller),'secret':token}}
    for inbound in template['inbounds']:
-    inbound['listen_port']=port;inbound['listen']='0.0.0.0'
+    inbound['listen_port']=port;inbound['listen']='::' if ':' in metadata['ip'] else '0.0.0.0'
     if inbound['type']=='vless':
      if not inbound.get('tls',{}).get('reality',{}).get('enabled'):error('只支持 Reality VLESS','Only Reality VLESS is supported')
      inbound['users']=[{'name':uid,'uuid':identity,'flow':'xtls-rprx-vision'}]
@@ -244,8 +249,11 @@ with lock():
    metadata.update(node_name=n,uuid=identity,hy2_password=password,hop=False,managed_certificates=[str(p/'certificate.crt'),str(p/'private.key')] if (p/'certificate.crt').exists() else [])
    atomic(p/'server.json',template);atomic(p/'state.json',metadata);config_check(p/'server.json')
    u={'id':uid,'name':n,'quota_bytes':q,'upload':0,'download':0,'expires_at':int(time.time())+valid,'enabled':True,'port':port,'api_port':controller,'api_secret':token,'running':False,'metering_blocked':False}
+   if warp is not None:
+    warp['configs'][str(p/'server.json')]=copy.deepcopy(warp['configs'][conf]);atomic(warp_path,warp)
    d['users'].append(u);atomic(db,d);print(uid)
   except Exception:
+   if warp_before is not None:atomic(warp_path,warp_before)
    for child in p.iterdir():child.unlink()
    p.rmdir();raise
  elif action=='service':
